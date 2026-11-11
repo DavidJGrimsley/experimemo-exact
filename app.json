@@ -1,0 +1,20 @@
+{
+  "$schema": "../../../temp/exact-upstream/scripts/app.schema.json",
+  "name": "Experimemo",
+  "short_name": "Experimemo",
+  "id": "com.experimemo.app",
+  "start_url": "/",
+  "display": "standalone",
+  "app": {
+    "id": "com.experimemo.app",
+    "name": "Experimemo"
+  },
+  "host": {
+    "web": {}
+  },
+  "deploy": {
+    "store": {
+      "web": "0"
+    }
+  }
+}
