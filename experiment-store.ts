@@ -158,6 +158,60 @@ function serial<T>(work: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** The file exists but does not hold a valid state. Nothing is changed or replaced when this is thrown. */
+export class StoreCorruptError extends Error {
+  constructor(detail: string) {
+    super(`The experiment file is damaged (${detail}), so nothing was changed. Reset the app to start over.`);
+  }
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isString = (v: unknown): v is string => typeof v === 'string';
+const isNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const isStamp = (v: unknown): v is string => isString(v) && !Number.isNaN(Date.parse(v));
+const nullableString = (v: unknown) => v === null || isString(v);
+
+function checkPhotos(v: unknown, where: string): void {
+  if (!Array.isArray(v)) throw new StoreCorruptError(`${where} has no photo list`);
+  for (const p of v) {
+    if (
+      !isObject(p) ||
+      !isString(p.id) ||
+      !isString(p.uri) ||
+      !nullableString(p.fileName) ||
+      !nullableString(p.mimeType) ||
+      !isNumber(p.width) ||
+      !isNumber(p.height)
+    ) {
+      throw new StoreCorruptError(`${where} has a malformed photo`);
+    }
+  }
+}
+
+function checkRecord(r: unknown, index: number): void {
+  if (!isObject(r) || !isString(r.id) || r.id === '') throw new StoreCorruptError(`record ${index + 1} has no id`);
+  const named = `record "${r.id}"`;
+  for (const key of ['title', 'category', 'hypothesis', 'procedure', 'dataPlan', 'observationsNotes', 'notes', 'conclusionNotes'] as const) {
+    if (!isString(r[key])) throw new StoreCorruptError(`${named} has a bad ${key}`);
+  }
+  if (!isNumber(r.plannedAttachmentCount) || r.plannedAttachmentCount < 0) throw new StoreCorruptError(`${named} has a bad photo count`);
+  if (r.status !== 'active' && r.status !== 'complete') throw new StoreCorruptError(`${named} has a bad status`);
+  if (!isStamp(r.createdAt) || !isStamp(r.updatedAt)) throw new StoreCorruptError(`${named} has a bad date`);
+  checkPhotos(r.photoAssets, named);
+  if (!Array.isArray(r.resultEntries)) throw new StoreCorruptError(`${named} has no result list`);
+  const seen = new Set<string>();
+  for (const e of r.resultEntries) {
+    if (!isObject(e) || !isString(e.id) || e.id === '' || seen.has(e.id)) throw new StoreCorruptError(`${named} has a bad result id`);
+    seen.add(e.id);
+    if (!isString(e.notes) || !isStamp(e.recordedAt)) throw new StoreCorruptError(`${named} has a malformed result`);
+    checkPhotos(e.photoAssets, `${named} result`);
+  }
+}
+
+/**
+ * Only a file that does not exist is a first run (ENOENT). A file that is there must be a
+ * complete, valid state: anything else throws and is left exactly as it is.
+ */
 async function read(storage: Storage): Promise<FileState> {
   let bytes: ArrayBuffer;
   try {
@@ -166,9 +220,23 @@ async function read(storage: Storage): Promise<FileState> {
     if ((e as { code?: string })?.code === 'ENOENT') return { bootstrapped: false, experiments: [] };
     throw e;
   }
-  const parsed = JSON.parse(new TextDecoder().decode(bytes));
-  if (!parsed || !Array.isArray(parsed.experiments)) throw new Error('The experiment file is unreadable.');
-  return { bootstrapped: Boolean(parsed.bootstrapped), experiments: parsed.experiments as ExperimentRecord[] };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch {
+    throw new StoreCorruptError('it is not readable data');
+  }
+  if (!isObject(parsed)) throw new StoreCorruptError('it is not an object');
+  if (parsed.bootstrapped !== true) throw new StoreCorruptError('it is missing its setup marker');
+  if (!Array.isArray(parsed.experiments)) throw new StoreCorruptError('it has no experiment list');
+  const ids = new Set<string>();
+  parsed.experiments.forEach((r, i) => {
+    checkRecord(r, i);
+    const id = (r as ExperimentRecord).id;
+    if (ids.has(id)) throw new StoreCorruptError(`id "${id}" appears twice`);
+    ids.add(id);
+  });
+  return { bootstrapped: true, experiments: parsed.experiments as ExperimentRecord[] };
 }
 
 /** Writes the state and reads the file back; anything but the same state is an error. */
@@ -179,14 +247,11 @@ async function write(storage: Storage, state: FileState): Promise<void> {
   if (back !== text) throw new Error('The change could not be confirmed in storage, so it was not saved.');
 }
 
-/** The state with the two examples seeded once; a file that already says so is left as it is. */
+/** The state; a missing file (and only that) is seeded once with the two examples. */
 async function ready(storage: Storage): Promise<FileState> {
   const state = await read(storage);
   if (state.bootstrapped) return state;
-  const next: FileState = {
-    bootstrapped: true,
-    experiments: state.experiments.length > 0 ? state.experiments : seedExperiments.map(clone),
-  };
+  const next: FileState = { bootstrapped: true, experiments: seedExperiments.map(clone) };
   await write(storage, next);
   return next;
 }
@@ -279,7 +344,10 @@ export function deleteExperiment(id: string, storage: Storage): Promise<void> {
   });
 }
 
-/** Empties the file and marks it seeded, so the examples are never put back. */
+/**
+ * Empties the file and marks it seeded, so the examples are never put back. It does not read
+ * first, so it also replaces a damaged file: the one deliberate way out.
+ */
 export function resetExperiments(storage: Storage): Promise<void> {
   return serial(() => write(storage, { bootstrapped: true, experiments: [] }));
 }
