@@ -1,7 +1,7 @@
 // Experimemo, visual foundation: the branded shell, New and Track. Colours live in
 // app.tamber (the reference theme tokens, light and dark by the system scheme).
 // Records are app.ts's (experiment-data.ts, one file). Not built here: result entries, photos,
-// autosave (the editor saves on a button).
+// (the editor autosaves 600 ms after the last edit).
 font "Yellowtail" = "assets/fonts/Yellowtail-Regular.ttf"
 
 shape Experiment
@@ -51,6 +51,19 @@ component ExperimemoExact
   mutation statusSaved as shape Reply refreshes experiments
   mutation removed as shape Reply refreshes experiments
   mutation resetDone as shape Reply refreshes experiments then afterReset
+  // The editor's latest valid draft, waiting out its 600 ms (hasPending), kept until a reply says it is stored.
+  state hasPending = false
+  state autoKey = 0
+  state pId = ""
+  state pTitle = ""
+  state pCategory = ""
+  state pHypothesis = ""
+  state pProcedure = ""
+  state pDataPlan = ""
+  state pObservations = ""
+  state pNotes = ""
+  state pConclusion = ""
+  state pPlanned = 0
   state aimedId = ""
   state aimedTitle = ""
   state made = 0
@@ -78,6 +91,8 @@ component ExperimemoExact
   derive removedError = match removed { case some(r) => r.error, case none => "" }
   derive resetError = match resetDone { case some(r) => r.error, case none => "" }
   derive statusError = match statusSaved { case some(r) => r.error, case none => "" }
+  task autosave when hasPending key=autoKey
+    after(600, flushAutosave)
   action done
     nav = back(nav)
   // A delete asks first, naming the record; Cancel leaves it alone.
@@ -100,6 +115,33 @@ component ExperimemoExact
       let fromInfo = top(fromDelete).name == "info" ? back(fromDelete) : fromDelete
       nav = select(fromInfo, "track")
   action reload
+  // The editor reports each edit with the whole draft; only a valid one is armed for saving,
+  // and each edit restarts the 600 ms. Nothing is sent on open.
+  action touch(id: string, title: string, category: string, hypothesis: string, procedure: string, dataPlan: string, observations: string, notes: string, conclusion: string, planned: number)
+    pId = id
+    pTitle = title
+    pCategory = category
+    pHypothesis = hypothesis
+    pProcedure = procedure
+    pDataPlan = dataPlan
+    pObservations = observations
+    pNotes = notes
+    pConclusion = conclusion
+    pPlanned = planned
+    hasPending = title.trim() != "" and hypothesis.trim() != ""
+    autoKey = autoKey + 1
+  // A save already in flight is waited out: the timer is armed again instead of overlapping it.
+  action flushAutosave
+    if hasPending
+      if pending(saved)
+        autoKey = autoKey + 1
+      else
+        hasPending = false
+        let at = time.epochAtZero + performanceNow()
+        send saved = saveExperimentRecord(pId, at, pTitle, pCategory, pHypothesis, pProcedure, pDataPlan, pObservations, pNotes, pConclusion, pPlanned)
+  action retrySave
+    hasPending = pTitle.trim() != "" and pHypothesis.trim() != ""
+    autoKey = autoKey + 1
     refresh experiments
   action pickNew
     nav = select(nav, "new")
@@ -161,9 +203,6 @@ component ExperimemoExact
       conclusion = ""
       planned = "0"
       nav = select(nav, "track")
-  action saveEdit(id: string, title: string, category: string, hypothesis: string, procedure: string, dataPlan: string, observations: string, notes: string, conclusion: string, planned: number)
-    let at = time.epochAtZero + performanceNow()
-    send saved = saveExperimentRecord(id, at, title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, planned)
   action changeStatus(id: string, status: string)
     let at = time.epochAtZero + performanceNow()
     send statusSaved = setExperimentStatus(id, at, status)
@@ -301,7 +340,7 @@ component ExperimemoExact
                         text "Back to Track"
                   else
                     for x in experiments.filter(r => r.id == e.params.id) key=x.id
-                      ExperimentEditor(route=e.id, x=x, save=saveEdit, setStatus=changeStatus, saveError=savedError, savedId=savedId, busy=(pending(saved) or pending(statusSaved)), statusError=statusError)
+                      ExperimentEditor(route=e.id, x=x, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
                 else if e.name == "track"
                   scroll id=`content-${e.id}` flex=1 min-height=0
                     column padding=20 gap=20 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
@@ -458,11 +497,14 @@ component ExperimentEditor
   props
     route: number
     x: Experiment
-    save: action
+    touch: action
+    retry: action
     setStatus: action
     saveError: string
     savedId: string
-    busy: bool
+    hasPending: bool
+    saving: bool
+    statusBusy: bool
     statusError: string
   state title = x.title
   state category = x.category
@@ -475,33 +517,39 @@ component ExperimentEditor
   state planned = `${x.planned}`
   state titleError = ""
   state hypothesisError = ""
+  derive invalid = title.trim() == "" or hypothesis.trim() == ""
   derive plannedNum = match parseNumber(planned) { case some(v) => (v < 0 ? 0 : round(v)), case none => 0 }
   derive saveFailed = savedId == x.id and saveError != ""
   action editTitle(v: string)
     title = v
-    titleError = ""
+    titleError = (v.trim() == "" ? "Give this experiment a name." : "")
+    touch(x.id, v, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, plannedNum)
   action editCategory(v: string)
     category = v
+    touch(x.id, title, v, hypothesis, procedure, dataPlan, observations, notes, conclusion, plannedNum)
   action editHypothesis(v: string)
     hypothesis = v
-    hypothesisError = ""
+    hypothesisError = (v.trim() == "" ? "Capture the question or expectation you are testing." : "")
+    touch(x.id, title, category, v, procedure, dataPlan, observations, notes, conclusion, plannedNum)
   action editProcedure(v: string)
     procedure = v
+    touch(x.id, title, category, hypothesis, v, dataPlan, observations, notes, conclusion, plannedNum)
   action editDataPlan(v: string)
     dataPlan = v
+    touch(x.id, title, category, hypothesis, procedure, v, observations, notes, conclusion, plannedNum)
   action editObservations(v: string)
     observations = v
+    touch(x.id, title, category, hypothesis, procedure, dataPlan, v, notes, conclusion, plannedNum)
   action editNotes(v: string)
     notes = v
+    touch(x.id, title, category, hypothesis, procedure, dataPlan, observations, v, conclusion, plannedNum)
   action editConclusion(v: string)
     conclusion = v
+    touch(x.id, title, category, hypothesis, procedure, dataPlan, observations, notes, v, plannedNum)
   action editPlanned(v: string)
     planned = v
-  action submit
-    titleError = (title.trim() == "" ? "Give this experiment a name." : "")
-    hypothesisError = (hypothesis.trim() == "" ? "Capture the question or expectation you are testing." : "")
-    if title.trim() != "" and hypothesis.trim() != "" and not busy
-      save(x.id, title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, plannedNum)
+    let n = match parseNumber(v) { case some(p) => (p < 0 ? 0 : round(p)), case none => 0 }
+    touch(x.id, title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, n)
   view
     column flex=1 min-height=0 display="flex" flex-direction="column"
       header
@@ -512,7 +560,7 @@ component ExperimentEditor
           column background-color="surface.card" border=(x.complete ? "1px solid var(--secondary)" : "1px solid var(--brand)") border-radius=12 padding=16 gap=10
             row gap=10 flex-wrap="wrap" align-items="center" justify-content="space-between"
               text x.badge testId="editor-status" role="status" background-color=(x.complete ? "secondary" : "brand") color=(x.complete ? "ink.on-secondary" : "ink.on-brand") border-radius=999 padding="4px 10px" font-size="0.75rem" font-weight=800
-              button press=setStatus(x.id, (x.complete ? "active" : "complete")) disabled=busy testId="toggle-status" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" max-width="100%" box-sizing="border-box"
+              button press=setStatus(x.id, (x.complete ? "active" : "complete")) disabled=statusBusy testId="toggle-status" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" max-width="100%" box-sizing="border-box"
                 text (x.complete ? "Mark active" : "Mark complete") font-weight=800 font-size="0.875rem" -exact-fit="shrink"
             text x.meta font-size="0.75rem" line-height="1.125rem" testId="editor-meta"
             if statusError != ""
@@ -548,12 +596,16 @@ component ExperimentEditor
           column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
             text "Planned photo count" font-size="0.9375rem" font-weight=800
             input value=planned input=editPlanned inputmode="numeric" aria-label="Planned photo count" testId="edit-planned" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
-          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
-            text "Save changes" font-size="1.0625rem" font-weight=800
-            text "Changes are written only when you save. Results and photos are not editable in this build yet." font-size="0.875rem" line-height="1.25rem"
-            button press=submit disabled=busy testId="save-changes" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height="3rem" padding="0.5rem 1rem" font-weight=800 font-size="0.875rem"
-              text (busy ? "Saving..." : "Save changes")
-            if saveFailed
-              text saveError color="warning" font-size="0.8125rem" font-weight=700 testId="save-error" role="alert"
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="autosave-card"
+            text "Autosave" font-size="1.0625rem" font-weight=800
+            text "Changes save automatically a moment after you stop typing. Results and photos are not editable in this build yet." font-size="0.875rem" line-height="1.25rem"
+            if hasPending or saving
+              text "Saving…" font-size="0.8125rem" font-weight=700 testId="save-pending" role="status"
+            else if invalid
+              text "Not saved yet: a title and a hypothesis are required." color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="save-invalid" role="status"
+            else if saveFailed
+              text `Not saved: ${saveError}` color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="save-error" role="alert"
+              button press=retry testId="retry-save" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start" max-width="100%" box-sizing="border-box"
+                text "Try saving again" font-weight=800 font-size="0.875rem" -exact-fit="shrink"
             else if savedId == x.id
-              text "Saved." font-size="0.8125rem" font-weight=700 testId="save-ok" role="status"
+              text "All changes saved." font-size="0.8125rem" font-weight=700 testId="save-ok" role="status"

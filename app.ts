@@ -1,24 +1,22 @@
 import type { Answer, Result, Sources, Storage } from './app.contract.d.ts';
 import {
-  EXPERIMENT_FS_PATH,
   createExperiment,
   deleteExperiment,
-  resetExperiments,
-  getExperimentById,
   listExperiments,
+  resetExperiments,
   updateExperiment,
   updateExperimentStatus,
+  type ExperimentFields,
   type ExperimentRecord,
-  type ExperimentInput,
+  type Storage as StoreStorage,
 } from './experiment-store.ts';
 
-// Records live in one file through experiment-store.ts. Every answer is also checked against
-// the file itself: a read or write the file does not confirm is an error the screen shows, never
-// a success.
+// Records live in one file through experiment-store.ts, which runs every operation one at a
+// time and reads each write back: a reply says ok only when the file holds the change.
 const FILE = 'app:/data/experiments.json'; // experiment-store.ts's EXPERIMENT_FS_PATH
 export const grants = [`fs.read ${FILE}`, `fs.write ${FILE}`].join('\n');
 
-
+const files = (storage: Storage) => storage as unknown as StoreStorage;
 
 // Dates are pinned to en-US and UTC so the text is the same on every host.
 const day = (iso: string) =>
@@ -28,13 +26,6 @@ const stamp = (iso: string) =>
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC',
   });
 const isoAt = (ms: number) => new Date(ms).toISOString();
-
-async function onDisk(storage: Storage): Promise<ExperimentRecord[]> {
-  const bytes = await storage.fs.readFile(EXPERIMENT_FS_PATH);
-  const parsed = JSON.parse(new TextDecoder().decode(bytes));
-  if (!parsed || !Array.isArray(parsed.experiments)) throw new Error('The experiment file is unreadable.');
-  return parsed.experiments as ExperimentRecord[];
-}
 
 function view(r: ExperimentRecord): Result<'experiments'>[number] {
   const latest = r.resultEntries[0];
@@ -62,53 +53,30 @@ function view(r: ExperimentRecord): Result<'experiments'>[number] {
   };
 }
 
-function inputOf(
-  existing: ExperimentRecord | null,
-  [title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, planned]: [
-    string, string, string, string, string, string, string, string, number,
-  ],
-): ExperimentInput {
-  return {
-    title,
-    category,
-    hypothesis,
-    procedure,
-    dataPlan,
-    observationsNotes: observations,
-    notes,
-    conclusionNotes: conclusion,
-    plannedAttachmentCount: planned,
-    // Results and photos are not edited here: keep what the record holds.
-    resultEntries: existing?.resultEntries ?? [],
-    photoAssets: existing?.photoAssets ?? [],
-  };
-}
+type Fields = [string, string, string, string, string, string, string, string, number];
 
-const failure = (e: unknown): Result<'createExperimentRecord'> => ({
-  ok: false,
-  id: '',
-  error: `Could not reach storage: ${e instanceof Error ? e.message : String(e)}`,
+const fieldsOf = ([title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, planned]: Fields): ExperimentFields => ({
+  title,
+  category,
+  hypothesis,
+  procedure,
+  dataPlan,
+  observationsNotes: observations,
+  notes,
+  conclusionNotes: conclusion,
+  plannedAttachmentCount: planned,
 });
 
-const unconfirmed = (id: string): Result<'createExperimentRecord'> => ({
-  ok: false,
-  id,
-  error: 'The change could not be confirmed in storage, so it was not saved.',
-});
+const ok = (id: string): Result<'createExperimentRecord'> => ({ ok: true, id, error: '' });
+const refused = (id: string, error: string): Result<'createExperimentRecord'> => ({ ok: false, id, error });
+const failure = (id: string, e: unknown): Result<'createExperimentRecord'> =>
+  refused(id, `Could not save to storage: ${e instanceof Error ? e.message : String(e)}`);
+
+const gone = 'This experiment no longer exists.';
 
 const sources: Sources = {
-  experiments: async (_args, _store, storage): Promise<Result<'experiments'>> => {
-    const records = await listExperiments(storage);
-    try {
-      const stored = await onDisk(storage);
-      const ids = new Set(stored.map((s) => s.id));
-      // The module answers from memory when storage fails: refuse what the file does not hold.
-      if (records.some((r) => !ids.has(r.id))) throw new Error('Experiments could not be read from storage.');
-    } catch (e) {
-      if ((e as { code?: string })?.code !== 'bake') throw e; // the build has no storage: let it through
-    }
-    return records.map(view);
-  },
+  experiments: async (_args, _store, storage): Promise<Result<'experiments'>> =>
+    (await listExperiments(files(storage))).map(view),
 
   createExperimentRecord: async (
     [id, ms, title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, planned],
@@ -116,18 +84,14 @@ const sources: Sources = {
     storage,
   ): Promise<Result<'createExperimentRecord'>> => {
     if (title.trim() === '' || hypothesis.trim() === '' || procedure.trim() === '') {
-      return { ok: false, id: '', error: 'Title, hypothesis and procedure are required.' };
+      return refused('', 'Title, hypothesis and procedure are required.');
     }
     try {
-      const at = isoAt(ms);
-      const input = inputOf(null, [title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, planned]);
-      await createExperiment(input, storage, { id, now: at });
-      const stored = (await onDisk(storage)).find((r) => r.id === id);
-      return stored && stored.title === title.trim() && stored.updatedAt === at
-        ? { ok: true, id, error: '' }
-        : unconfirmed(id);
+      const fields = fieldsOf([title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, planned]);
+      await createExperiment(fields, files(storage), { id, now: isoAt(ms) });
+      return ok(id);
     } catch (e) {
-      return failure(e);
+      return failure('', e);
     }
   },
 
@@ -137,58 +101,41 @@ const sources: Sources = {
     storage,
   ): Promise<Result<'saveExperimentRecord'>> => {
     if (title.trim() === '' || hypothesis.trim() === '') {
-      return { ok: false, id, error: 'Title and hypothesis are required to save changes.' };
+      return refused(id, 'Title and hypothesis are required to save changes.');
     }
     try {
-      const existing = await getExperimentById(id, storage);
-      if (!existing) return { ok: false, id, error: 'This experiment no longer exists.' };
-      const at = isoAt(ms);
-      const input = inputOf(existing, [title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, planned]);
-      await updateExperiment(id, input, storage, { now: at });
-      const stored = (await onDisk(storage)).find((r) => r.id === id);
-      return stored && stored.title === title.trim() && stored.updatedAt === at
-        ? { ok: true, id, error: '' }
-        : unconfirmed(id);
+      const fields = fieldsOf([title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, planned]);
+      const saved = await updateExperiment(id, fields, files(storage), { now: isoAt(ms) });
+      return saved ? ok(id) : refused(id, gone);
     } catch (e) {
-      return failure(e);
+      return failure(id, e);
     }
   },
 
   setExperimentStatus: async ([id, ms, status], _store, storage): Promise<Result<'setExperimentStatus'>> => {
     try {
-      const next = status === 'complete' ? 'complete' : 'active';
-      const at = isoAt(ms);
-      const updated = await updateExperimentStatus(id, next, storage, { now: at });
-      if (!updated) return { ok: false, id, error: 'This experiment no longer exists.' };
-      const stored = (await onDisk(storage)).find((r) => r.id === id);
-      return stored && stored.status === next && stored.updatedAt === at
-        ? { ok: true, id, error: '' }
-        : unconfirmed(id);
+      const saved = await updateExperimentStatus(id, status === 'complete' ? 'complete' : 'active', files(storage), { now: isoAt(ms) });
+      return saved ? ok(id) : refused(id, gone);
     } catch (e) {
-      return failure(e);
+      return failure(id, e);
     }
   },
 
   deleteExperimentRecord: async ([id], _store, storage): Promise<Result<'deleteExperimentRecord'>> => {
     try {
-      await deleteExperiment(id, storage);
-      // Success only if the file no longer holds it.
-      return (await onDisk(storage)).some((r) => r.id === id)
-        ? { ok: false, id, error: 'The experiment could not be removed from storage, so it was kept.' }
-        : { ok: true, id, error: '' };
+      await deleteExperiment(id, files(storage));
+      return ok(id);
     } catch (e) {
-      return failure(e);
+      return failure(id, e);
     }
   },
 
   resetExperimentRecords: async (_args, _store, storage): Promise<Result<'resetExperimentRecords'>> => {
     try {
-      await resetExperiments(storage);
-      return (await onDisk(storage)).length === 0
-        ? { ok: true, id: '', error: '' }
-        : { ok: false, id: '', error: 'The experiments could not be cleared from storage, so nothing was reset.' };
+      await resetExperiments(files(storage));
+      return ok('');
     } catch (e) {
-      return failure(e);
+      return failure('', e);
     }
   },
 };

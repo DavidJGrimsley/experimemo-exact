@@ -67,16 +67,32 @@ test "an invalid New save stores nothing and keeps what was typed"
   clock data
   expect state experiments.length == 2
 
-test "the editor saves field changes that survive a reload"
+test "opening the editor saves nothing, even after waiting"
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-2"
+  clock settle
+  clock +5000
+  clock data
+  expect tree missing "save-pending"
+  expect tree missing "save-ok"
+  expect text "editor-meta" == "Physics - Updated Jun 15, 2026"
+
+test "edits autosave 600 ms after the last one, each edit restarts the wait, and the result survives a reload"
   tap "tab-track"
   clock data
   tap "card-experiment-seed-2"
   clock settle
   type "edit-title" "Cooling rate, retitled"
+  clock +400
   type "edit-observations" "Second run started."
-  tap "save-changes"
+  clock +400
+  expect tree has "save-pending"
+  expect tree missing "save-ok"
+  clock +300
   clock data
   expect tree has "save-ok"
+  expect tree missing "save-pending"
   reload
   tap "tab-track"
   clock data
@@ -85,19 +101,136 @@ test "the editor saves field changes that survive a reload"
   expect text "editor-title" == "Cooling rate, retitled"
   expect text "edit-observations" == "Second run started."
 
-test "the editor refuses an empty title and keeps the stored record"
+test "an invalid draft is never saved, keeps what was typed, and the stored record is unchanged"
   at "/experiment/experiment-seed-1"
   clock data
   type "edit-title" ""
-  tap "save-changes"
-  expect text "edit-error-title" == "Give this experiment a name."
+  clock +2000
+  clock data
+  expect tree has "save-invalid"
+  expect tree has "edit-error-title"
   expect tree missing "save-ok"
+  expect text "edit-title" == ""
   reload
   tap "tab-track"
   clock data
   tap "card-experiment-seed-1"
   clock settle
   expect text "editor-title" == "Bean sprouts under different light conditions (Example)"
+
+test "a valid edit after an invalid one saves"
+  at "/experiment/experiment-seed-1"
+  clock data
+  type "edit-title" ""
+  clock +1000
+  type "edit-title" "Bean sprouts, renamed"
+  clock +700
+  clock data
+  expect tree has "save-ok"
+  expect text "editor-title" == "Bean sprouts, renamed"
+
+test "a status change made while an edit waits is immediate and both survive a reload"
+  at "/experiment/experiment-seed-1"
+  clock data
+  type "edit-title" "Edited then completed"
+  tap "toggle-status"
+  clock data
+  expect text "editor-status" == "COMPLETE"
+  expect tree has "save-pending"
+  clock +700
+  clock data
+  expect tree has "save-ok"
+  expect text "editor-status" == "COMPLETE"
+  reload
+  tap "tab-track"
+  clock data
+  expect text "badge-experiment-seed-1" == "COMPLETE"
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "editor-title" == "Edited then completed"
+  expect text "editor-status" == "COMPLETE"
+
+test "a status change that lands while an autosave is in flight keeps both changes"
+  at "/experiment/experiment-seed-1"
+  clock data
+  type "edit-title" "In flight"
+  clock +600
+  tap "toggle-status"
+  clock data
+  clock data
+  expect text "editor-status" == "COMPLETE"
+  expect tree has "save-ok"
+  reload
+  tap "tab-track"
+  clock data
+  expect text "badge-experiment-seed-1" == "COMPLETE"
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "editor-title" == "In flight"
+
+test "a status change followed by an edit before the first reply keeps both"
+  at "/experiment/experiment-seed-2"
+  clock data
+  tap "toggle-status"
+  type "edit-category" "Thermodynamics"
+  clock +600
+  clock data
+  clock data
+  reload
+  tap "tab-track"
+  clock data
+  expect text "badge-experiment-seed-2" == "COMPLETE"
+  tap "card-experiment-seed-2"
+  clock settle
+  expect text "edit-category" == "Thermodynamics"
+
+test "an autosave waiting while another record is deleted still lands, and the delete holds"
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  type "edit-title" "Edited before delete"
+  back
+  clock settle
+  tap "info-track"
+  clock settle
+  tap "delete-experiments"
+  clock settle
+  tap "delete-experiment-seed-2"
+  clock settle
+  tap "delete-confirm-yes"
+  clock +700
+  clock data
+  clock data
+  reload
+  tap "tab-track"
+  clock data
+  expect state experiments.length == 1
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "editor-title" == "Edited before delete"
+
+test "an autosave waiting while a new record is created keeps the edit and the new record"
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  type "edit-title" "Edited during create"
+  tap "tab-new"
+  type "field-title" "Created meanwhile"
+  type "field-hypothesis" "Both stay."
+  type "field-procedure" "Save both."
+  tap "save"
+  clock +700
+  clock data
+  clock data
+  reload
+  tap "tab-track"
+  clock data
+  expect state experiments.length == 3
+  tap "Created meanwhile"
+  clock settle
+  expect text "editor-title" == "Created meanwhile"
 
 test "marking complete moves the card to COMPLETED and persists"
   at "/experiment/experiment-seed-1"

@@ -115,9 +115,17 @@ export const seedExperiments: ExperimentRecord[] = [
 
 // ---------------------------------------------------------------------------
 // The file store. One JSON file, read and written whole, through storage.fs.
-// Every failure throws: nothing here falls back to memory, so a caller never
-// reports a save the file does not hold. Time and ids are arguments (a data
-// source has no clock or random of its own).
+//
+// - Every exported operation, the first-run seeding included, runs one at a time through a
+//   single queue, so two overlapping calls (an autosave and a status change, a create and
+//   a delete) each read what the one before wrote: no write is lost to a stale read.
+// - Every write is read back and compared before the operation returns, inside the same
+//   turn of the queue; a file that does not hold what was written is an error.
+// - Every failure throws. Nothing falls back to memory, so a caller never reports a save
+//   the file does not hold. Time and ids are arguments (a data source has no clock or random).
+//
+// The queue is this module's: it serialises calls made in one JavaScript realm, which is
+// how Exact runs a data module's sources. A second process writing the same file is not covered.
 // ---------------------------------------------------------------------------
 
 export const EXPERIMENT_FS_PATH = 'app:/data/experiments.json';
@@ -130,6 +138,9 @@ export interface Storage {
   readonly fs: FileSystem;
 }
 
+/** The fields an editor owns; results and photos are kept as the record holds them. */
+export type ExperimentFields = Omit<ExperimentInput, 'resultEntries' | 'photoAssets'>;
+
 interface FileState {
   bootstrapped: boolean;
   experiments: ExperimentRecord[];
@@ -137,6 +148,15 @@ interface FileState {
 
 const clone = (r: ExperimentRecord): ExperimentRecord => JSON.parse(JSON.stringify(r));
 const byUpdated = (xs: ExperimentRecord[]) => [...xs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+let tail: Promise<unknown> = Promise.resolve();
+
+/** Runs `work` after every earlier operation has finished, whether it succeeded or failed. */
+function serial<T>(work: () => Promise<T>): Promise<T> {
+  const run = tail.then(work, work);
+  tail = run.catch(() => undefined);
+  return run;
+}
 
 async function read(storage: Storage): Promise<FileState> {
   let bytes: ArrayBuffer;
@@ -151,8 +171,12 @@ async function read(storage: Storage): Promise<FileState> {
   return { bootstrapped: Boolean(parsed.bootstrapped), experiments: parsed.experiments as ExperimentRecord[] };
 }
 
+/** Writes the state and reads the file back; anything but the same state is an error. */
 async function write(storage: Storage, state: FileState): Promise<void> {
-  await storage.fs.atomicWriteFile(EXPERIMENT_FS_PATH, new TextEncoder().encode(JSON.stringify(state)));
+  const text = JSON.stringify(state);
+  await storage.fs.atomicWriteFile(EXPERIMENT_FS_PATH, new TextEncoder().encode(text));
+  const back = new TextDecoder().decode(await storage.fs.readFile(EXPERIMENT_FS_PATH));
+  if (back !== text) throw new Error('The change could not be confirmed in storage, so it was not saved.');
 }
 
 /** The state with the two examples seeded once; a file that already says so is left as it is. */
@@ -167,82 +191,95 @@ async function ready(storage: Storage): Promise<FileState> {
   return next;
 }
 
-export async function listExperiments(storage: Storage): Promise<ExperimentRecord[]> {
-  return byUpdated((await ready(storage)).experiments.map(clone));
-}
-
-export async function getExperimentById(id: string, storage: Storage): Promise<ExperimentRecord | null> {
-  const found = (await ready(storage)).experiments.find((e) => e.id === id);
-  return found ? clone(found) : null;
-}
-
-function fromInput(input: ExperimentInput) {
+function fromFields(f: ExperimentFields) {
   return {
-    title: input.title.trim(),
-    category: input.category.trim() || 'General',
-    hypothesis: input.hypothesis.trim(),
-    procedure: input.procedure.trim(),
-    dataPlan: input.dataPlan.trim(),
-    observationsNotes: input.observationsNotes.trim(),
-    resultEntries: input.resultEntries,
-    notes: input.notes.trim(),
-    conclusionNotes: input.conclusionNotes.trim(),
-    plannedAttachmentCount: Math.max(0, Number(input.plannedAttachmentCount) || 0),
-    photoAssets: input.photoAssets,
+    title: f.title.trim(),
+    category: f.category.trim() || 'General',
+    hypothesis: f.hypothesis.trim(),
+    procedure: f.procedure.trim(),
+    dataPlan: f.dataPlan.trim(),
+    observationsNotes: f.observationsNotes.trim(),
+    notes: f.notes.trim(),
+    conclusionNotes: f.conclusionNotes.trim(),
+    plannedAttachmentCount: Math.max(0, Number(f.plannedAttachmentCount) || 0),
   };
 }
 
-export async function createExperiment(
-  input: ExperimentInput,
+export function listExperiments(storage: Storage): Promise<ExperimentRecord[]> {
+  return serial(async () => byUpdated((await ready(storage)).experiments.map(clone)));
+}
+
+export function getExperimentById(id: string, storage: Storage): Promise<ExperimentRecord | null> {
+  return serial(async () => {
+    const found = (await ready(storage)).experiments.find((e) => e.id === id);
+    return found ? clone(found) : null;
+  });
+}
+
+export function createExperiment(
+  fields: ExperimentFields,
   storage: Storage,
   options: { id: string; now: string },
 ): Promise<ExperimentRecord> {
-  const state = await ready(storage);
-  const record: ExperimentRecord = {
-    id: options.id,
-    ...fromInput(input),
-    status: 'active',
-    createdAt: options.now,
-    updatedAt: options.now,
-  };
-  await write(storage, { ...state, experiments: [record, ...state.experiments] });
-  return clone(record);
+  return serial(async () => {
+    const state = await ready(storage);
+    if (state.experiments.some((e) => e.id === options.id)) throw new Error('An experiment with this id exists.');
+    const record: ExperimentRecord = {
+      id: options.id,
+      ...fromFields(fields),
+      resultEntries: [],
+      photoAssets: [],
+      status: 'active',
+      createdAt: options.now,
+      updatedAt: options.now,
+    };
+    await write(storage, { ...state, experiments: [record, ...state.experiments] });
+    return clone(record);
+  });
 }
 
-export async function updateExperiment(
+/** Changes the editor's fields, keeping the stored status, results and photos. Null: no such record. */
+export function updateExperiment(
   id: string,
-  input: ExperimentInput,
+  fields: ExperimentFields,
   storage: Storage,
   options: { now: string },
 ): Promise<ExperimentRecord | null> {
-  const state = await ready(storage);
-  const existing = state.experiments.find((e) => e.id === id);
-  if (!existing) return null;
-  const record: ExperimentRecord = { ...existing, ...fromInput(input), updatedAt: options.now };
-  await write(storage, { ...state, experiments: state.experiments.map((e) => (e.id === id ? record : e)) });
-  return clone(record);
+  return serial(async () => {
+    const state = await ready(storage);
+    const existing = state.experiments.find((e) => e.id === id);
+    if (!existing) return null;
+    const record: ExperimentRecord = { ...existing, ...fromFields(fields), updatedAt: options.now };
+    await write(storage, { ...state, experiments: state.experiments.map((e) => (e.id === id ? record : e)) });
+    return clone(record);
+  });
 }
 
-export async function updateExperimentStatus(
+/** Changes the status, keeping every field. Null: no such record. */
+export function updateExperimentStatus(
   id: string,
   status: ExperimentStatus,
   storage: Storage,
   options: { now: string },
 ): Promise<ExperimentRecord | null> {
-  const state = await ready(storage);
-  const existing = state.experiments.find((e) => e.id === id);
-  if (!existing) return null;
-  const record: ExperimentRecord = { ...existing, status, updatedAt: options.now };
-  await write(storage, { ...state, experiments: state.experiments.map((e) => (e.id === id ? record : e)) });
-  return clone(record);
+  return serial(async () => {
+    const state = await ready(storage);
+    const existing = state.experiments.find((e) => e.id === id);
+    if (!existing) return null;
+    const record: ExperimentRecord = { ...existing, status, updatedAt: options.now };
+    await write(storage, { ...state, experiments: state.experiments.map((e) => (e.id === id ? record : e)) });
+    return clone(record);
+  });
 }
 
-export async function deleteExperiment(id: string, storage: Storage): Promise<void> {
-  const state = await ready(storage);
-  await write(storage, { ...state, experiments: state.experiments.filter((e) => e.id !== id) });
+export function deleteExperiment(id: string, storage: Storage): Promise<void> {
+  return serial(async () => {
+    const state = await ready(storage);
+    await write(storage, { ...state, experiments: state.experiments.filter((e) => e.id !== id) });
+  });
 }
 
 /** Empties the file and marks it seeded, so the examples are never put back. */
-export async function resetExperiments(storage: Storage): Promise<void> {
-  await write(storage, { bootstrapped: true, experiments: [] });
+export function resetExperiments(storage: Storage): Promise<void> {
+  return serial(() => write(storage, { bootstrapped: true, experiments: [] }));
 }
