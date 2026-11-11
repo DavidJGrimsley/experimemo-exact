@@ -1,30 +1,55 @@
 // Experimemo, visual foundation: the branded shell, New and Track. Colours live in
 // app.tamber (the reference theme tokens, light and dark by the system scheme).
-// Not built here: saving, persistence, photos, the editor, the app-info settings.
+// Records are app.ts's (experiment-data.ts, one file). Not built here: result entries, photos,
+// delete and reset, autosave (the editor saves on a button).
 font "Yellowtail" = "assets/fonts/Yellowtail-Regular.ttf"
 
 shape Experiment
   id: string
   title: string
-  meta: string
+  category: string
+  hypothesis: string
+  procedure: string
+  dataPlan: string
+  observationsText: string
+  notes: string
+  conclusion: string
+  planned: number
   status: string
   complete: bool
-  hypothesis: string
+  meta: string
+  badge: string
   observations: string
   results: string
-  planned: string
-  conclusion: string
+  plannedLabel: string
+  conclusionLabel: string
+
+shape Reply
+  ok: bool
+  id: string
+  error: string
+
+shape Time
+  epochAtZero: number
+  utcOffset: number
 
 routes nav
   tab new "/"
     info "/info"
   tab track "/track"
+    experiment "/experiment/:id"
   onboarding "/onboarding"
   ready "/onboarding/account-setup"
   notfound
 
 component ExperimemoExact
   resource experiments = experiments() as shape Experiment[] else empty()
+  resource time = exactTime() as shape Time
+  mutation created as shape Reply refreshes experiments then afterCreate
+  mutation saved as shape Reply refreshes experiments
+  mutation statusSaved as shape Reply refreshes experiments
+  state made = 0
+  state createError = ""
   state title = ""
   state category = ""
   state hypothesis = ""
@@ -37,9 +62,19 @@ component ExperimemoExact
   state titleError = ""
   state hypothesisError = ""
   state procedureError = ""
-  state notice = ""
   state acceptedPrivacy = false
   state acceptedTerms = false
+  derive plannedNum = match parseNumber(planned) { case some(v) => (v < 0 ? 0 : round(v)), case none => 0 }
+  derive createdOk = match created { case some(r) => r.ok, case none => false }
+  derive createdError = match created { case some(r) => r.error, case none => "" }
+  derive loadError = match failure(experiments) { case some(f) => f.message, case none => "" }
+  derive savedError = match saved { case some(r) => r.error, case none => "" }
+  derive savedId = match saved { case some(r) => r.id, case none => "" }
+  derive statusError = match statusSaved { case some(r) => r.error, case none => "" }
+  action reload
+    refresh experiments
+  action pickNew
+    nav = select(nav, "new")
   action pick(name: string)
     nav = select(nav, name)
   action follow(url: string)
@@ -79,7 +114,31 @@ component ExperimemoExact
     titleError = (title.trim() == "" ? "Give this experiment a name." : "")
     hypothesisError = (hypothesis.trim() == "" ? "Capture the question or expectation you are testing." : "")
     procedureError = (procedure.trim() == "" ? "Add the repeatable steps before saving." : "")
-    notice = (title.trim() == "" or hypothesis.trim() == "" or procedure.trim() == "" ? "" : "Saving is not available in this visual build yet; nothing was stored.")
+    createError = ""
+    if title.trim() != "" and hypothesis.trim() != "" and procedure.trim() != "" and not pending(created) and not pending(time)
+      let at = time.epochAtZero + performanceNow()
+      send created = createExperimentRecord(`experiment-${at}-${made}`, at, title, category, hypothesis, procedure, dataPlan, observations, fieldNotes, conclusion, plannedNum)
+      made = made + 1
+  // Clear the form and open Track only when the reply says the record is stored; a refusal keeps every field.
+  action afterCreate
+    createError = createdError
+    if createdOk
+      title = ""
+      category = ""
+      hypothesis = ""
+      procedure = ""
+      dataPlan = ""
+      observations = ""
+      fieldNotes = ""
+      conclusion = ""
+      planned = "0"
+      nav = select(nav, "track")
+  action saveEdit(id: string, title: string, category: string, hypothesis: string, procedure: string, dataPlan: string, observations: string, notes: string, conclusion: string, planned: number)
+    let at = time.epochAtZero + performanceNow()
+    send saved = saveExperimentRecord(id, at, title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, planned)
+  action changeStatus(id: string, status: string)
+    let at = time.epochAtZero + performanceNow()
+    send statusSaved = setExperimentStatus(id, at, status)
   view
     main testId="root" navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow width="100%" height="100%" display="flex" flex-direction="column" background-color="surface.page" color="ink" accent-color="brand"
       column flex=1 min-height=0 position="relative"
@@ -162,6 +221,31 @@ component ExperimemoExact
                         text "Create a new experiment or open Track to keep working on something you already saved." font-size="0.875rem" line-height="1.25rem"
                       link href="/" testId="open-experiments" background-color="brand" color="ink.on-brand" border-radius=12 min-height="3rem" padding="0.75rem 1rem" font-weight=800 align-self="flex-start" max-width="100%" box-sizing="border-box"
                         text "Open experiments" -exact-fit="shrink"
+                else if e.name == "experiment"
+                  if pending(experiments)
+                    header
+                      text "Experiment" role="heading" aria-level=1 -exact-fit="shrink"
+                    column padding=20 testId="editor-loading"
+                      text "Loading experiment…" font-size="0.9375rem"
+                  else if failed(experiments)
+                    header
+                      text "Experiment" role="heading" aria-level=1 -exact-fit="shrink"
+                    column padding=20 gap=12 testId="editor-failed"
+                      text "This experiment could not be read from storage." font-size="0.9375rem" font-weight=800
+                      text loadError font-size="0.8125rem" line-height="1.25rem" testId="editor-failed-detail"
+                      button press=reload testId="editor-retry" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+                        text "Try again" font-weight=800 font-size="0.875rem"
+                  else if experiments.filter(x => x.id == e.params.id).length == 0
+                    header
+                      text "Not found" role="heading" aria-level=1
+                    column padding=20 gap=12 testId="editor-missing"
+                      text "This experiment does not exist" font-size="1.75rem" font-weight=800 line-height=1.4 -exact-fit="shrink"
+                      text "It may have been deleted. Head back to Track to see your experiments." font-size="0.9375rem" line-height="1.375rem"
+                      link href="/track" testId="editor-missing-track" background-color="brand" color="ink.on-brand" border-radius=12 min-height="3rem" padding="0.75rem 1rem" font-weight=800 align-self="flex-start" max-width="100%" box-sizing="border-box"
+                        text "Back to Track"
+                  else
+                    for x in experiments.filter(r => r.id == e.params.id) key=x.id
+                      ExperimentEditor(route=e.id, x=x, save=saveEdit, setStatus=changeStatus, saveError=savedError, savedId=savedId, busy=(pending(saved) or pending(statusSaved)), statusError=statusError)
                 else if e.name == "track"
                   scroll id=`content-${e.id}` flex=1 min-height=0
                     column padding=20 gap=20 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
@@ -171,26 +255,33 @@ component ExperimemoExact
                           text "Review every experiment in one place and reopen any record to keep adding observations, notes, and photos." font-size="0.9375rem" line-height="1.375rem"
                         link href="/info" aria-label="Open app info and settings" testId="info-track" min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
                           image "symbol:info" font-size="1.375rem"
-                      column gap=10
-                        text "ACTIVE" font-size="0.8125rem" font-weight=800
-                        column gap=12 testId="track-list"
-                          for x in experiments key=x.id
-                            column background-color="surface.card" border=(x.complete ? "1px solid var(--secondary)" : "1px solid var(--brand)") border-radius=12 padding=16 gap=10 testId=`card-${x.id}` role="group" aria-label=x.title
-                              row gap=10 flex-wrap="wrap" align-items="flex-start"
-                                column flex-grow=1 flex-basis="10rem" min-width=0 gap=4
-                                  text x.title font-size="1rem" font-weight=800
-                                  text x.meta font-size="0.75rem" line-height="1.125rem"
-                                text x.status background-color=(x.complete ? "secondary" : "brand") color=(x.complete ? "ink.on-secondary" : "ink.on-brand") border-radius=999 padding="4px 10px" font-size="0.75rem" font-weight=800
-                              column gap=4
-                                text "Hypothesis" font-size="0.75rem" font-weight=800
-                                text x.hypothesis font-size="0.875rem" line-height="1.25rem"
-                                text "Observations" font-size="0.75rem" font-weight=800 -exact-fit="shrink"
-                                text x.observations font-size="0.875rem" line-height="1.25rem"
-                                text "Results" font-size="0.75rem" font-weight=800
-                                text x.results font-size="0.875rem" line-height="1.25rem"
-                              row gap=12 flex-wrap="wrap"
-                                text x.planned font-size="0.75rem" font-weight=700
-                                text x.conclusion font-size="0.75rem" font-weight=700
+                      if pending(experiments)
+                        text "Loading experiments…" font-size="0.9375rem" testId="track-loading" role="status"
+                      else if failed(experiments)
+                        column background-color="surface.card" border="1px solid var(--warning)" border-radius=12 padding=16 gap=10 testId="track-failed"
+                          text "Experiments could not be read" font-size="1.0625rem" font-weight=800
+                          text loadError font-size="0.875rem" line-height="1.25rem" testId="track-failed-detail"
+                          button press=reload testId="track-retry" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+                            text "Try again" font-weight=800 font-size="0.875rem"
+                      else if experiments.length == 0
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="track-empty"
+                          text "No experiments yet" font-size="1.0625rem" font-weight=800
+                          text "Create your first experiment to start recording your process and results." font-size="0.875rem" line-height="1.25rem"
+                          button press=pickNew testId="create-experiment" background-color="brand" color="ink.on-brand" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+                            text "Create experiment" font-weight=800 font-size="0.875rem"
+                      else
+                        if experiments.filter(x => not x.complete).length > 0
+                          column gap=10 testId="section-active"
+                            text "ACTIVE" font-size="0.8125rem" font-weight=800
+                            column gap=12
+                              for x in experiments.filter(r => not r.complete) key=x.id
+                                ExperimentCard(x=x)
+                        if experiments.filter(x => x.complete).length > 0
+                          column gap=10 testId="section-completed"
+                            text "COMPLETED" font-size="0.8125rem" font-weight=800
+                            column gap=12
+                              for x in experiments.filter(r => r.complete) key=x.id
+                                ExperimentCard(x=x)
                 else
                   scroll id=`content-${e.id}` flex=1 min-height=0
                     column padding=20 gap=16 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
@@ -241,10 +332,10 @@ component ExperimemoExact
                       column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
                         text "Save and continue later" font-size="1.0625rem" font-weight=800
                         text "Your experiment appears in Track right away so you can keep building it out whenever you need to." font-size="0.875rem" line-height="1.25rem"
-                        button press=save testId="save" aria-label="Save experiment" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem"
-                          text "Save experiment"
-                        if notice != ""
-                          text notice font-size="0.8125rem" font-weight=700 testId="notice" role="status"
+                        button press=save disabled=pending(created) testId="save" aria-label="Save experiment" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem"
+                          text (pending(created) ? "Saving..." : "Save experiment")
+                        if createError != ""
+                          text createError color="warning" font-size="0.8125rem" font-weight=700 testId="create-error" role="alert"
       row role="tablist"
         button role="tab" aria-controls="panel-new" aria-selected=(nav.tab == "new") press=pick("new") testId="tab-new" flex=1
           image "symbol:add"
@@ -272,3 +363,129 @@ component InfoRow
           text title font-size="0.9375rem" font-weight=800
           text body font-size="0.875rem" line-height="1.25rem"
         text "Open" font-size="0.8125rem" font-weight=800 color="ink"
+
+component ExperimentCard
+  props
+    x: Experiment
+  view
+    link href=path("experiment", x.id) testId=`card-${x.id}` aria-label=`${x.title}, ${x.badge}. Open experiment`
+      column background-color="surface.card" border=(x.complete ? "1px solid var(--secondary)" : "1px solid var(--brand)") border-radius=12 padding=16 gap=10 width="100%" box-sizing="border-box"
+        row gap=10 flex-wrap="wrap" align-items="flex-start"
+          column flex-grow=1 flex-basis="10rem" min-width=0 gap=4
+            text x.title font-size="1rem" font-weight=800
+            text x.meta font-size="0.75rem" line-height="1.125rem"
+          text x.badge testId=`badge-${x.id}` background-color=(x.complete ? "secondary" : "brand") color=(x.complete ? "ink.on-secondary" : "ink.on-brand") border-radius=999 padding="4px 10px" font-size="0.75rem" font-weight=800
+        column gap=4
+          text "Hypothesis" font-size="0.75rem" font-weight=800
+          text x.hypothesis font-size="0.875rem" line-height="1.25rem"
+          text "Observations" font-size="0.75rem" font-weight=800 -exact-fit="shrink"
+          text x.observations font-size="0.875rem" line-height="1.25rem"
+          text "Results" font-size="0.75rem" font-weight=800
+          text x.results font-size="0.875rem" line-height="1.25rem"
+        row gap=12 flex-wrap="wrap"
+          text x.plannedLabel font-size="0.75rem" font-weight=700
+          text x.conclusionLabel font-size="0.75rem" font-weight=700
+
+component ExperimentEditor
+  props
+    route: number
+    x: Experiment
+    save: action
+    setStatus: action
+    saveError: string
+    savedId: string
+    busy: bool
+    statusError: string
+  state title = x.title
+  state category = x.category
+  state hypothesis = x.hypothesis
+  state procedure = x.procedure
+  state dataPlan = x.dataPlan
+  state observations = x.observationsText
+  state notes = x.notes
+  state conclusion = x.conclusion
+  state planned = `${x.planned}`
+  state titleError = ""
+  state hypothesisError = ""
+  derive plannedNum = match parseNumber(planned) { case some(v) => (v < 0 ? 0 : round(v)), case none => 0 }
+  derive saveFailed = savedId == x.id and saveError != ""
+  action editTitle(v: string)
+    title = v
+    titleError = ""
+  action editCategory(v: string)
+    category = v
+  action editHypothesis(v: string)
+    hypothesis = v
+    hypothesisError = ""
+  action editProcedure(v: string)
+    procedure = v
+  action editDataPlan(v: string)
+    dataPlan = v
+  action editObservations(v: string)
+    observations = v
+  action editNotes(v: string)
+    notes = v
+  action editConclusion(v: string)
+    conclusion = v
+  action editPlanned(v: string)
+    planned = v
+  action submit
+    titleError = (title.trim() == "" ? "Give this experiment a name." : "")
+    hypothesisError = (hypothesis.trim() == "" ? "Capture the question or expectation you are testing." : "")
+    if title.trim() != "" and hypothesis.trim() != "" and not busy
+      save(x.id, title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, plannedNum)
+  view
+    column flex=1 min-height=0 display="flex" flex-direction="column"
+      header
+        text "Experiment" role="heading" aria-level=1 -exact-fit="shrink"
+      scroll id=`content-${route}` flex=1 min-height=0
+        column padding=20 gap=16 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
+          text x.title role="heading" aria-level=2 testId="editor-title" font-size="1.75rem" font-weight=800 line-height=1.4 -exact-fit="shrink"
+          column background-color="surface.card" border=(x.complete ? "1px solid var(--secondary)" : "1px solid var(--brand)") border-radius=12 padding=16 gap=10
+            row gap=10 flex-wrap="wrap" align-items="center" justify-content="space-between"
+              text x.badge testId="editor-status" role="status" background-color=(x.complete ? "secondary" : "brand") color=(x.complete ? "ink.on-secondary" : "ink.on-brand") border-radius=999 padding="4px 10px" font-size="0.75rem" font-weight=800
+              button press=setStatus(x.id, (x.complete ? "active" : "complete")) disabled=busy testId="toggle-status" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" max-width="100%" box-sizing="border-box"
+                text (x.complete ? "Mark active" : "Mark complete") font-weight=800 font-size="0.875rem" -exact-fit="shrink"
+            text x.meta font-size="0.75rem" line-height="1.125rem" testId="editor-meta"
+            if statusError != ""
+              text statusError color="warning" font-size="0.8125rem" font-weight=700 testId="status-error" role="alert"
+          column background-color="surface.card" border=(titleError == "" ? "1px solid var(--brand)" : "1px solid var(--warning)") border-radius=12 padding=16 gap=8
+            text "Experiment title" font-size="0.9375rem" font-weight=800
+            input value=title input=editTitle aria-label="Experiment title" aria-invalid=(titleError != "") testId="edit-title" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
+            if titleError != ""
+              text titleError color="warning" font-size="0.8125rem" font-weight=700 testId="edit-error-title"
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Category" font-size="0.9375rem" font-weight=800
+            input value=category input=editCategory aria-label="Category" testId="edit-category" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
+          column background-color="surface.card" border=(hypothesisError == "" ? "1px solid var(--brand)" : "1px solid var(--warning)") border-radius=12 padding=16 gap=8
+            text "Hypothesis" font-size="0.9375rem" font-weight=800
+            textarea value=hypothesis input=editHypothesis aria-label="Hypothesis" aria-invalid=(hypothesisError != "") testId="edit-hypothesis" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+            if hypothesisError != ""
+              text hypothesisError color="warning" font-size="0.8125rem" font-weight=700 testId="edit-error-hypothesis"
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Procedure" font-size="0.9375rem" font-weight=800
+            textarea value=procedure input=editProcedure aria-label="Procedure" testId="edit-procedure" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Data collection plan" font-size="0.9375rem" font-weight=800
+            textarea value=dataPlan input=editDataPlan aria-label="Data collection plan" testId="edit-dataplan" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Observations" font-size="0.9375rem" font-weight=800 -exact-fit="shrink"
+            textarea value=observations input=editObservations aria-label="Observations" testId="edit-observations" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Field notes" font-size="0.9375rem" font-weight=800
+            textarea value=notes input=editNotes aria-label="Field notes" testId="edit-notes" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Conclusion" font-size="0.9375rem" font-weight=800
+            textarea value=conclusion input=editConclusion aria-label="Conclusion" testId="edit-conclusion" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Planned photo count" font-size="0.9375rem" font-weight=800
+            input value=planned input=editPlanned inputmode="numeric" aria-label="Planned photo count" testId="edit-planned" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+            text "Save changes" font-size="1.0625rem" font-weight=800
+            text "Changes are written only when you save. Results and photos are not editable in this build yet." font-size="0.875rem" line-height="1.25rem"
+            button press=submit disabled=busy testId="save-changes" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height="3rem" padding="0.5rem 1rem" font-weight=800 font-size="0.875rem"
+              text (busy ? "Saving..." : "Save changes")
+            if saveFailed
+              text saveError color="warning" font-size="0.8125rem" font-weight=700 testId="save-error" role="alert"
+            else if savedId == x.id
+              text "Saved." font-size="0.8125rem" font-weight=700 testId="save-ok" role="status"

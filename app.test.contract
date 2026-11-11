@@ -9,10 +9,119 @@ test "empty save shows the reference validation messages"
   expect text "error-hypothesis" == "Capture the question or expectation you are testing."
   expect text "error-procedure" == "Add the repeatable steps before saving."
 
-test "Track shows both example cards"
+test "Track lists both seeded examples, newest update first, from the stored file"
   tap "tab-track"
+  clock data
+  expect tree has "section-active"
+  expect tree missing "section-completed"
   expect tree has "card-experiment-seed-1"
   expect tree has "card-experiment-seed-2"
+  expect text "badge-experiment-seed-1" == "ACTIVE"
+
+test "a card opens its own record"
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-2"
+  clock settle
+  expect text "editor-title" == "Cooling rate of metal versus glass containers (Example)"
+  expect text "edit-category" == "Physics"
+  expect text "edit-planned" == "0"
+
+test "a deep link opens the record, and a missing id says so"
+  at "/experiment/experiment-seed-1"
+  clock data
+  expect text "editor-title" == "Bean sprouts under different light conditions (Example)"
+
+test "a missing experiment shows its own screen with a way back"
+  at "/experiment/nope"
+  clock data
+  expect tree has "editor-missing"
+  tap "editor-missing-track"
+  clock settle
+  expect tree has "card-experiment-seed-1"
+
+test "New saves a record, clears the form, opens Track, and the record survives a reload"
+  type "field-title" "Mold growth on bread"
+  type "field-hypothesis" "Bread in a damp bag molds first."
+  type "field-procedure" "Seal slices in bags, one damp, one dry; photograph daily."
+  tap "save"
+  clock data
+  expect state nav.tab == "track"
+  expect text "field-title" == ""
+  expect state experiments.length == 3
+  reload
+  tap "tab-track"
+  clock data
+  expect state experiments.length == 3
+  tap "Mold growth on bread"
+  clock settle
+  expect text "editor-title" == "Mold growth on bread"
+  expect text "edit-category" == "General"
+
+test "an invalid New save stores nothing and keeps what was typed"
+  type "field-title" "Half done"
+  tap "save"
+  expect text "error-hypothesis" == "Capture the question or expectation you are testing."
+  expect text "field-title" == "Half done"
+  tap "tab-track"
+  clock data
+  expect state experiments.length == 2
+
+test "the editor saves field changes that survive a reload"
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-2"
+  clock settle
+  type "edit-title" "Cooling rate, retitled"
+  type "edit-observations" "Second run started."
+  tap "save-changes"
+  clock data
+  expect tree has "save-ok"
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-2"
+  clock settle
+  expect text "editor-title" == "Cooling rate, retitled"
+  expect text "edit-observations" == "Second run started."
+
+test "the editor refuses an empty title and keeps the stored record"
+  at "/experiment/experiment-seed-1"
+  clock data
+  type "edit-title" ""
+  tap "save-changes"
+  expect text "edit-error-title" == "Give this experiment a name."
+  expect tree missing "save-ok"
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "editor-title" == "Bean sprouts under different light conditions (Example)"
+
+test "marking complete moves the card to COMPLETED and persists"
+  at "/experiment/experiment-seed-1"
+  clock data
+  tap "toggle-status"
+  clock data
+  expect text "editor-status" == "COMPLETE"
+  tap "tab-track"
+  clock settle
+  reload
+  tap "tab-track"
+  clock data
+  expect tree has "section-completed"
+  expect text "badge-experiment-seed-1" == "COMPLETE"
+  expect tree has "section-active"
+
+test "marking a completed record active returns it to ACTIVE"
+  at "/experiment/experiment-seed-1"
+  clock data
+  tap "toggle-status"
+  clock data
+  tap "toggle-status"
+  clock data
+  expect text "editor-status" == "ACTIVE"
 
 test "app info lists About, Feedback and links, and says delete and reset are unavailable"
   tap "info-new"
@@ -31,6 +140,7 @@ test "app info lists About, Feedback and links, and says delete and reset are un
 
 test "app info opens from Track too"
   tap "tab-track"
+  clock data
   tap "info-track"
   clock settle
   expect tree has "row-privacy"
