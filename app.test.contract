@@ -432,7 +432,7 @@ test "the editor lists the seeded result with its timestamp and the Track summar
   expect text "result-count" == "1 timestamped entry"
   expect text "result-stamp-result-seed-1" == "Jun 16, 2026, 5:10 PM"
   expect text "result-notes-result-seed-1" == "Window tray stems are taller and greener than the desk lamp tray after the first measurement cycle."
-  expect tree missing "result-dirty-result-seed-1"
+  expect tree missing "result-saving-result-seed-1"
   expect tree missing "result-add-error"
 
 test "an empty or blank draft cannot be saved as a result"
@@ -488,14 +488,19 @@ test "a result does not disturb the other fields, and an edit waiting beside it 
   expect text "edit-category" == "Physics"
   expect text "result-count" == "1 timestamped entry"
 
-test "editing an existing result's notes is kept only when saved, and survives a reload"
+test "result notes autosave 600 ms after the last edit, each edit restarts the wait, and survive a reload"
   at "/experiment/experiment-seed-1"
   clock data
+  type "result-notes-result-seed-1" "Corrected: window tray is"
+  clock +400
   type "result-notes-result-seed-1" "Corrected: window tray is 2 cm taller."
-  expect tree has "result-dirty-result-seed-1"
-  tap "result-save-result-seed-1"
+  clock +400
+  expect tree has "result-saving-result-seed-1"
+  expect text "result-notes-result-seed-1" == "Corrected: window tray is 2 cm taller."
+  clock +300
   clock data
-  expect tree missing "result-dirty-result-seed-1"
+  expect tree missing "result-saving-result-seed-1"
+  expect text "result-notes-result-seed-1" == "Corrected: window tray is 2 cm taller."
   reload
   tap "tab-track"
   clock data
@@ -503,28 +508,182 @@ test "editing an existing result's notes is kept only when saved, and survives a
   clock settle
   expect text "result-notes-result-seed-1" == "Corrected: window tray is 2 cm taller."
   expect text "result-stamp-result-seed-1" == "Jun 16, 2026, 5:10 PM"
+  expect text "result-count" == "1 timestamped entry"
 
-test "discarding an edit restores the stored notes and stores nothing"
+test "opening a result saves nothing"
   at "/experiment/experiment-seed-1"
   clock data
-  type "result-notes-result-seed-1" "Never stored"
-  tap "result-revert-result-seed-1"
-  expect text "result-notes-result-seed-1" == "Window tray stems are taller and greener than the desk lamp tray after the first measurement cycle."
-  expect tree missing "result-dirty-result-seed-1"
+  clock +5000
+  clock data
+  expect tree missing "result-saving-result-seed-1"
+  expect text "editor-meta" == "Botany - Updated Jun 16, 2026"
 
-test "blanking a result that has no photos is refused with a message and nothing changes"
+test "rapid edits to several results each keep their own draft and all are stored"
   at "/experiment/experiment-seed-1"
   clock data
-  type "result-notes-result-seed-1" "   "
-  tap "result-save-result-seed-1"
+  type "result-draft" "Second"
+  tap "result-add"
   clock data
-  expect text "result-error-result-seed-1" == "A result needs notes or photos."
+  type "result-draft" "Third"
+  tap "result-add"
+  clock data
+  expect text "result-count" == "3 timestamped entries"
+  type "result-notes-result-seed-1" "Seed edited"
+  type "result-notes-result-1767225600000-0" "Second edited"
+  type "result-notes-result-1767225600001-1" "Third edited"
+  type "result-notes-result-seed-1" "Seed edited twice"
+  expect tree has "result-saving-result-seed-1"
+  expect tree has "result-saving-result-1767225600000-0"
+  expect tree has "result-saving-result-1767225600001-1"
+  expect text "result-notes-result-seed-1" == "Seed edited twice"
+  expect text "result-notes-result-1767225600000-0" == "Second edited"
+  clock +700
+  clock data
+  clock +700
+  clock data
+  clock +700
+  clock data
+  expect tree missing "result-saving-result-seed-1"
+  expect tree missing "result-saving-result-1767225600000-0"
+  expect tree missing "result-saving-result-1767225600001-1"
   reload
   tap "tab-track"
   clock data
   tap "card-experiment-seed-1"
   clock settle
+  expect text "result-notes-result-seed-1" == "Seed edited twice"
+  expect text "result-notes-result-1767225600000-0" == "Second edited"
+  expect text "result-notes-result-1767225600001-1" == "Third edited"
+  expect text "result-count" == "3 timestamped entries"
+
+test "result edits and experiment field edits made together overlap safely and both land"
+  at "/experiment/experiment-seed-1"
+  clock data
+  type "edit-title" "Overlap title"
+  type "result-notes-result-seed-1" "Overlap notes"
+  type "edit-observations" "Overlap observations"
+  clock +700
+  clock data
+  clock +700
+  clock data
+  expect tree missing "save-pending"
+  expect tree missing "result-saving-result-seed-1"
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "editor-title" == "Overlap title"
+  expect text "edit-observations" == "Overlap observations"
+  expect text "result-notes-result-seed-1" == "Overlap notes"
+  expect text "edit-category" == "Botany"
+  expect text "result-count" == "1 timestamped entry"
+
+test "leaving the editor with a result edit waiting still stores it"
+  at "/experiment/experiment-seed-1"
+  clock data
+  type "result-notes-result-seed-1" "Saved after leaving"
+  tap "tab-track"
+  clock +700
+  clock data
+  clock +700
+  clock data
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "result-notes-result-seed-1" == "Saved after leaving"
+
+test "blanking a result that has no photos is refused, the draft stays, nothing is stored, and Try again reports it again"
+  at "/experiment/experiment-seed-1"
+  clock data
+  type "result-notes-result-seed-1" "   "
+  clock +700
+  clock data
+  expect text "result-error-result-seed-1" == "Not saved: A result needs notes or photos."
+  expect tree missing "result-saving-result-seed-1"
+  tap "result-retry-result-seed-1"
+  clock +700
+  clock data
+  expect text "result-error-result-seed-1" == "Not saved: A result needs notes or photos."
+  type "result-notes-result-seed-1" "Fixed notes"
+  expect tree missing "result-error-result-seed-1"
+  clock +700
+  clock data
+  clock +700
+  clock data
+  expect tree missing "result-error-result-seed-1"
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "result-notes-result-seed-1" == "Fixed notes"
+
+test "one refused result does not block another result's edit"
+  at "/experiment/experiment-seed-1"
+  clock data
+  type "result-draft" "Second"
+  tap "result-add"
+  clock data
+  type "result-notes-result-seed-1" ""
+  type "result-notes-result-1767225600000-0" "Second kept"
+  clock +700
+  clock data
+  clock +700
+  clock data
+  expect text "result-error-result-seed-1" == "Not saved: A result needs notes or photos."
+  expect tree missing "result-saving-result-1767225600000-0"
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "result-notes-result-1767225600000-0" == "Second kept"
   expect text "result-notes-result-seed-1" == "Window tray stems are taller and greener than the desk lamp tray after the first measurement cycle."
+
+test "cancelling a result delete keeps the entry and its waiting edit, which still saves"
+  at "/experiment/experiment-seed-1"
+  clock data
+  type "result-notes-result-seed-1" "Kept through cancel"
+  tap "result-delete-result-seed-1"
+  clock settle
+  tap "result-delete-cancel"
+  clock settle
+  expect tree has "result-result-seed-1"
+  expect text "result-notes-result-seed-1" == "Kept through cancel"
+  clock +700
+  clock data
+  clock +700
+  clock data
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "result-notes-result-seed-1" == "Kept through cancel"
+
+test "deleting a result with a waiting edit removes it and the edit does not bring it back"
+  at "/experiment/experiment-seed-1"
+  clock data
+  type "result-notes-result-seed-1" "About to go"
+  tap "result-delete-result-seed-1"
+  clock settle
+  tap "result-delete-yes"
+  clock data
+  clock +700
+  clock data
+  clock +700
+  clock data
+  expect tree missing "result-result-seed-1"
+  expect text "result-count" == "0 timestamped entries"
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "result-count" == "0 timestamped entries"
 
 test "cancelling a result delete keeps the entry"
   at "/experiment/experiment-seed-1"

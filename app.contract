@@ -10,6 +10,14 @@ shape ResultItem
   notes: string
   photos: number
 
+// One unsaved edit of one result's notes; each result has its own, so edits to several never overwrite each other.
+shape ResultDraft
+  expId: string
+  id: string
+  notes: string
+  failed: bool
+  error: string
+
 shape Experiment
   id: string
   title: string
@@ -59,7 +67,7 @@ component ExperimemoExact
   mutation statusSaved as shape Reply refreshes experiments
   mutation removed as shape Reply refreshes experiments
   mutation resultAdded as shape Reply refreshes experiments then afterResultAdd
-  mutation resultEdited as shape Reply refreshes experiments
+  mutation resultEdited as shape Reply refreshes experiments then afterResultEdit
   mutation resultRemoved as shape Reply refreshes experiments
   mutation resetDone as shape Reply refreshes experiments then afterReset
   // The editor's latest valid draft, waiting out its 600 ms (hasPending), kept until a reply says it is stored.
@@ -78,6 +86,10 @@ component ExperimemoExact
   state aimedId = ""
   state aimedResultExp = ""
   state aimedResultId = ""
+  state resultDrafts: ResultDraft[] = []
+  state resultKey = 0
+  state sentResultId = ""
+  state sentResultNotes = ""
   state draftFor = ""
   state draftNotes = ""
   state resultMade = 0
@@ -108,11 +120,16 @@ component ExperimemoExact
   derive resetError = match resetDone { case some(r) => r.error, case none => "" }
   derive addError = match resultAdded { case some(r) => r.error, case none => "" }
   derive editResultError = match resultEdited { case some(r) => r.error, case none => "" }
-  derive editResultId = match resultEdited { case some(r) => r.id, case none => "" }
+  derive nextResultId = match first(resultDrafts.filter(d => not d.failed)) { case some(d) => d.id, case none => "" }
+  derive nextResultExp = match first(resultDrafts.filter(d => not d.failed)) { case some(d) => d.expId, case none => "" }
+  derive nextResultNotes = match first(resultDrafts.filter(d => not d.failed)) { case some(d) => d.notes, case none => "" }
   derive removeResultError = match resultRemoved { case some(r) => r.error, case none => "" }
   derive statusError = match statusSaved { case some(r) => r.error, case none => "" }
   task autosave when hasPending key=autoKey
     after(600, flushAutosave)
+  // Result notes autosave like the other fields: 600 ms after the last edit, one result at a time.
+  task resultAutosave when nextResultId != "" key=resultKey
+    after(600, flushResults)
   action done
     nav = back(nav)
   // A delete asks first, naming the record; Cancel leaves it alone.
@@ -122,6 +139,7 @@ component ExperimemoExact
     showModal("delete-confirm")
   action confirmDelete
     if not pending(removed)
+      resultDrafts = resultDrafts.filter(d => d.expId != aimedId)
       send removed = deleteExperimentRecord(aimedId)
   action askReset
     showModal("reset-confirm")
@@ -176,16 +194,37 @@ component ExperimemoExact
   action afterResultAdd
     if addError == "" and not failed(resultAdded)
       draftNotes = ""
-  action saveResultNotes(id: string, resultId: string, notes: string)
-    if not pending(resultEdited)
-      let at = time.epochAtZero + performanceNow()
-      send resultEdited = editResultRecord(id, resultId, at, notes)
+  // An edit replaces that result's draft only; the timer restarts, and a failed draft waits for Retry.
+  action editResultDraft(expId: string, id: string, notes: string)
+    resultDrafts = resultDrafts.filter(d => d.id != id).concat([ResultDraft(expId=expId, id=id, notes=notes, failed=false, error="")])
+    resultKey = resultKey + 1
+  // A save in flight is waited out. A draft leaves the list only when its reply says the file holds
+  // exactly those notes; one edited meanwhile stays and is sent next.
+  action flushResults
+    if nextResultId != ""
+      if pending(resultEdited) or pending(time)
+        resultKey = resultKey + 1
+      else
+        let at = time.epochAtZero + performanceNow()
+        sentResultId = nextResultId
+        sentResultNotes = nextResultNotes
+        send resultEdited = editResultRecord(nextResultExp, nextResultId, at, nextResultNotes)
+  action afterResultEdit
+    if editResultError == "" and not failed(resultEdited)
+      resultDrafts = resultDrafts.filter(d => not (d.id == sentResultId and d.notes == sentResultNotes))
+    else
+      resultDrafts = resultDrafts.map(d => (d.id == sentResultId and d.notes == sentResultNotes) ? ResultDraft(expId=d.expId, id=d.id, notes=d.notes, failed=true, error=(editResultError == "" ? "Could not save these notes." : editResultError)) : d)
+    resultKey = resultKey + 1
+  action retryResult(id: string)
+    resultDrafts = resultDrafts.map(d => d.id == id ? ResultDraft(expId=d.expId, id=d.id, notes=d.notes, failed=false, error="") : d)
+    resultKey = resultKey + 1
   action askDeleteResult(id: string, resultId: string)
     aimedResultExp = id
     aimedResultId = resultId
     showModal("result-delete-confirm")
   action confirmDeleteResult
     if not pending(resultRemoved)
+      resultDrafts = resultDrafts.filter(d => d.id != aimedResultId)
       let at = time.epochAtZero + performanceNow()
       send resultRemoved = removeResultRecord(aimedResultExp, aimedResultId, at)
   action pickNew
@@ -385,7 +424,7 @@ component ExperimemoExact
                         text "Back to Track"
                   else
                     for x in experiments.filter(r => r.id == e.params.id) key=x.id
-                      ExperimentEditor(route=e.id, x=x, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, draft=(draftFor == x.id ? draftNotes : ""), editDraft=editDraft, addResult=addResult, adding=pending(resultAdded), addError=addError, saveResultNotes=saveResultNotes, askDeleteResult=askDeleteResult, editResultError=editResultError, editResultId=editResultId, removeResultError=removeResultError, resultBusy=pending(resultEdited) or pending(resultRemoved), hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
+                      ExperimentEditor(route=e.id, x=x, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, draft=(draftFor == x.id ? draftNotes : ""), editDraft=editDraft, addResult=addResult, adding=pending(resultAdded), addError=addError, editResult=editResultDraft, retryResult=retryResult, resultDrafts=resultDrafts, askDeleteResult=askDeleteResult, removeResultError=removeResultError, resultBusy=pending(resultEdited) or pending(resultRemoved), hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
                 else if e.name == "track"
                   scroll id=`content-${e.id}` flex=1 min-height=0
                     column padding=20 gap=20 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
@@ -558,10 +597,10 @@ component ExperimentEditor
     addResult: action
     adding: bool
     addError: string
-    saveResultNotes: action
+    editResult: action
+    retryResult: action
+    resultDrafts: ResultDraft[]
     askDeleteResult: action
-    editResultError: string
-    editResultId: string
     removeResultError: string
     resultBusy: bool
     hasPending: bool
@@ -674,10 +713,10 @@ component ExperimentEditor
             if removeResultError != ""
               text removeResultError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="result-remove-error" role="alert"
             for r in x.entries key=r.id
-              ResultEntry(expId=x.id, r=r, save=saveResultNotes, askDelete=askDeleteResult, busy=resultBusy, error=(editResultId == r.id ? editResultError : ""))
+              ResultEntry(expId=x.id, r=r, drafts=resultDrafts, edit=editResult, retry=retryResult, askDelete=askDeleteResult, busy=resultBusy)
           column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="autosave-card"
             text "Autosave" font-size="1.0625rem" font-weight=800
-            text "Changes save automatically a moment after you stop typing. Results are saved on their own, as you add or save them; photos are not editable in this build yet." font-size="0.875rem" line-height="1.25rem"
+            text "Changes save automatically a moment after you stop typing. Result notes save the same way, and a new result is saved when you add it; photos are not editable in this build yet." font-size="0.875rem" line-height="1.25rem"
             if hasPending or saving
               text "Saving…" font-size="0.8125rem" font-weight=700 testId="save-pending" role="status"
             else if invalid
@@ -693,31 +732,32 @@ component ResultEntry
   props
     expId: string
     r: ResultItem
-    save: action
+    drafts: ResultDraft[]
+    edit: action
+    retry: action
     askDelete: action
     busy: bool
-    error: string
-  state notes = r.notes
-  derive dirty = notes != r.notes
-  action edit(v: string)
-    notes = v
-  action discard
-    notes = r.notes
+  derive mine = drafts.filter(d => d.id == r.id)
+  derive waiting = mine.length > 0
+  derive text = match first(mine) { case some(d) => d.notes, case none => r.notes }
+  derive failed = mine.filter(d => d.failed).length > 0
+  derive error = match first(mine) { case some(d) => d.error, case none => "" }
+  action type(v: string)
+    edit(expId, r.id, v)
+  action again
+    retry(r.id)
   view
     column background-color="surface.page" border-radius=12 padding=12 gap=8 testId=`result-${r.id}`
       row gap=8 flex-wrap="wrap" align-items="center" justify-content="space-between"
         text r.stamp font-size="0.8125rem" font-weight=800 testId=`result-stamp-${r.id}`
         button press=askDelete(expId, r.id) disabled=busy aria-label=`Delete result from ${r.stamp}` testId=`result-delete-${r.id}` background-color="danger" color="ink.on-danger" border-radius=999 min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0
           image "symbol:close"
-      textarea value=notes input=edit aria-label=`Result notes, ${r.stamp}` testId=`result-notes-${r.id}` rows=3 placeholder="Add result details." background-color="surface.card" border-radius=14 padding="12px 14px" height=96
+      textarea value=text input=type aria-label=`Result notes, ${r.stamp}` testId=`result-notes-${r.id}` rows=3 placeholder="Add result details." background-color="surface.card" border-radius=14 padding="12px 14px" height=96
       if r.photos > 0
         text `${r.photos} ${r.photos == 1 ? "photo" : "photos"} attached` font-size="0.8125rem" testId=`result-photos-${r.id}`
-      if dirty
-        text "Unsaved changes" font-size="0.8125rem" font-weight=700 testId=`result-dirty-${r.id}` role="status"
-      row gap=8 flex-wrap="wrap"
-        button press=save(expId, r.id, notes) disabled=(busy or not dirty) testId=`result-save-${r.id}` aria-label="Save notes" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem"
-          text "Save notes" font-weight=800 font-size="0.875rem"
-        button press=discard disabled=not dirty testId=`result-revert-${r.id}` aria-label="Discard changes" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem"
-          text "Discard" font-weight=800 font-size="0.875rem"
-      if error != ""
-        text error color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId=`result-error-${r.id}` role="alert"
+      if failed
+        text `Not saved: ${error}` color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId=`result-error-${r.id}` role="alert"
+        button press=again testId=`result-retry-${r.id}` border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+          text "Try saving again" font-weight=800 font-size="0.875rem"
+      else if waiting
+        text "Saving…" font-size="0.8125rem" font-weight=700 testId=`result-saving-${r.id}` role="status"
