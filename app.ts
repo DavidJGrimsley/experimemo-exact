@@ -30,6 +30,8 @@ export const grants = [
   `fs.read ${FILE}`,
   `fs.write ${FILE}`,
   'fs.read app:/tmp',
+  'fs.write app:/tmp',
+  'device.camera purpose.camera Experimemo uses the camera to photograph your experiments.',
   'fs.read app:/data/photos',
   'fs.write app:/data/photos',
 ].join('\n');
@@ -142,6 +144,19 @@ function photoFailure(e: unknown): string {
   return `Could not save to storage: ${e instanceof Error ? e.message : String(e)}`;
 }
 
+const cameraPicked = (path: string, type: string, size: number, width: number, height: number) => ({
+  path, name: path.split('/').pop() ?? '', type, size, width, height, duration: null,
+});
+
+// The temporary shot is no longer needed once the durable copy (or the failure) is settled; leaving it is harmless.
+async function dropCameraTemp(storage: Storage, path: string): Promise<void> {
+  try {
+    await (files(storage) as unknown as { fs: { rm(p: string): Promise<void> } }).fs.rm(path);
+  } catch {
+    // app:/tmp is pruned by the host.
+  }
+}
+
 const sources: Sources = {
   experiments: async (_args, _store, storage): Promise<Result<'experiments'>> =>
     (await listExperiments(files(storage))).map(view),
@@ -243,6 +258,37 @@ const sources: Sources = {
         files(storage),
         { now: isoAt(ms) },
       );
+      return saved ? photoReply(true, idBase, '') : photoReply(false, idBase, gone);
+    } catch (e) {
+      return photoReply(false, idBase, photoFailure(e));
+    }
+  },
+
+  // A camera photo waits under app:/tmp/camera; it becomes a durable copy exactly like a picked file, then the temporary file goes.
+  stageCameraPhoto: async ([idBase, ms, path, type, size, width, height], _store, storage): Promise<Result<'stageCameraPhoto'>> => {
+    try {
+      const picked = [cameraPicked(path, type, size, width, height)];
+      const assets = await stagePhotos(
+        () => persistPickedPhotos(picked, storage, { now: isoAt(ms), scope: 'experiment', generateId: (i) => `${idBase}-${i}` }),
+        files(storage),
+      );
+      await dropCameraTemp(storage, path);
+      return photoReply(true, idBase, '', assets.map(photoView));
+    } catch (e) {
+      return photoReply(false, idBase, photoFailure(e));
+    }
+  },
+
+  attachCameraPhoto: async ([expId, resultId, idBase, ms, path, type, size, width, height], _store, storage): Promise<Result<'attachCameraPhoto'>> => {
+    try {
+      const picked = [cameraPicked(path, type, size, width, height)];
+      const saved = await attachPhotos(
+        { experimentId: expId, resultId },
+        () => persistPickedPhotos(picked, storage, { now: isoAt(ms), scope: resultId === '' ? 'experiment' : 'result', generateId: (i) => `${idBase}-${i}` }),
+        files(storage),
+        { now: isoAt(ms) },
+      );
+      await dropCameraTemp(storage, path);
       return saved ? photoReply(true, idBase, '') : photoReply(false, idBase, gone);
     } catch (e) {
       return photoReply(false, idBase, photoFailure(e));

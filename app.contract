@@ -2,6 +2,9 @@
 // app.tamber (the reference theme tokens, light and dark by the system scheme).
 // Records are app.ts's (experiment-data.ts, one file). Not built here: result entries, photos,
 // (the editor autosaves 600 ms after the last edit).
+use getUserMedia, stopTrack, cameraStatus, MediaStream, MediaStreamTrack, CameraStatus from "@exact/media-capture"
+use takePhoto, Photo as CameraPhoto from "@exact/camera"
+
 font "Yellowtail" = "assets/fonts/Yellowtail-Regular.ttf"
 
 shape Viewport
@@ -83,6 +86,7 @@ component ExperimemoExact
   resource experiments = experiments() as shape Experiment[] else empty()
   resource time = exactTime() as shape Time
   resource viewport = exactViewport() as shape Viewport
+  resource camStatus = cameraStatus() as shape CameraStatus else empty()
   derive wide = viewport.width >= 900
   mutation created as shape Reply refreshes experiments then afterCreate
   mutation saved as shape Reply refreshes experiments
@@ -92,6 +96,9 @@ component ExperimemoExact
   mutation attached as shape PhotoReply refreshes experiments then afterAttach
   mutation detached as shape PhotoReply refreshes experiments then afterDetach
   mutation discarded as shape PhotoReply
+  mutation camOpened as shape MediaStream then armCamera
+  mutation camShot as shape CameraPhoto then afterShot
+  mutation camStopped as shape MediaStreamTrack
   mutation resultAdded as shape Reply refreshes experiments then afterResultAdd
   mutation resultEdited as shape Reply refreshes experiments then afterResultEdit
   mutation resultRemoved as shape Reply refreshes experiments
@@ -125,6 +132,15 @@ component ExperimemoExact
   state draftPhotos: Photo[] = []
   state photoNote = ""
   state photoNoteKey = ""
+  state camOpen = false
+  state camTrack = ""
+  derive camOpenError = match failure(camOpened) { case some(f) => (f.code == "NotAllowedError" or f.code == "denied" ? "Camera access was denied. Allow the camera in your browser or system settings, then choose Take Photo again." : (f.code == "NotFoundError" ? "No camera was found on this device." : `The camera could not be opened: ${f.message}`)), case none => "" }
+  derive camShotError = match failure(camShot) { case some(f) => `The photo could not be taken: ${f.message}`, case none => "" }
+  derive shotPath = match camShot { case some(p) => p.path, case none => "" }
+  derive shotType = match camShot { case some(p) => p.type, case none => "" }
+  derive shotSize = match camShot { case some(p) => p.size, case none => 0 }
+  derive shotWidth = match camShot { case some(p) => p.width, case none => 0 }
+  derive shotHeight = match camShot { case some(p) => p.height, case none => 0 }
   derive stagedPhotos = match staged { case some(r) => r.photos, case none => [] }
   derive stagedError = match staged { case some(r) => r.error, case none => "" }
   derive attachedError = match attached { case some(r) => r.error, case none => "" }
@@ -278,7 +294,61 @@ component ExperimemoExact
     photoNoteKey = scope == "new" ? "new" : (scope == "draft" ? `draft-${expId}` : (scope == "result" ? `result-${resultId}` : `exp-${expId}`))
     if scope == "draft"
       draftFor = expId
+    showModal("photo-source")
+  action chooseLibrary
     showPicker("photo-picker")
+  action sourceCancelled
+    photoNote = "Photo selection cancelled. Nothing was changed."
+  action chooseCamera
+    if not camStatus.available
+      photoNote = "The camera is not available here. Choose photos from your library instead."
+    else
+      camOpen = true
+      camTrack = ""
+      showModal("camera-dialog")
+      send camOpened = getUserMedia(video=true)
+  // A stream that arrives after the sheet closed is stopped at once, so the camera never stays on.
+  action armCamera
+    match camOpened
+      case some(s)
+        let t = match s.tracks.at(0) { case some(t) => t.id, case none => "" }
+        if camOpen
+          camTrack = t
+        else if t != ""
+          send camStopped = stopTrack(track=t)
+      case none
+        camTrack = ""
+  action closeCamera
+    camOpen = false
+    if camTrack != ""
+      send camStopped = stopTrack(track=camTrack)
+    camTrack = ""
+    close("camera-dialog")
+    photoNote = "Photo capture cancelled. Nothing was changed."
+  action cameraDismissed
+    camOpen = false
+    if camTrack != ""
+      send camStopped = stopTrack(track=camTrack)
+    camTrack = ""
+    photoNote = "Photo capture cancelled. Nothing was changed."
+  action shutter
+    if camTrack != "" and not pending(camShot) and not photoBusy and not pending(time)
+      let at = time.epochAtZero + performanceNow()
+      let n = photoMade + 1
+      photoMade = n
+      send camShot = takePhoto(track=camTrack, path=`app:/tmp/camera/shot-${at}-${n}`)
+  action afterShot
+    if camShotError == "" and not failed(camShot)
+      let at = time.epochAtZero + performanceNow()
+      let n = photoMade
+      camOpen = false
+      send camStopped = stopTrack(track=camTrack)
+      camTrack = ""
+      close("camera-dialog")
+      if pickScope == "new" or pickScope == "draft"
+        send staged = stageCameraPhoto(`photo-${at}-${n}`, at, shotPath, shotType, shotSize, shotWidth, shotHeight)
+      else
+        send attached = attachCameraPhoto(pickExp, pickResult, `photo-${at}-${n}`, at, shotPath, shotType, shotSize, shotWidth, shotHeight)
   action photosCancelled
     photoNote = "Photo selection cancelled. Nothing was changed."
   action photosPicked(files: Picked[])
@@ -613,7 +683,6 @@ component ExperimemoExact
                         text "Add photos now or attach them later from the experiment record." font-size="0.875rem" line-height="1.25rem"
                         button press=askPhotos("new", "", "") disabled=photoBusy testId="new-add-photos" aria-label="Add photos" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
                           text "Add photos" font-weight=800 font-size="0.875rem"
-                        text "Taking a photo with the camera is not available in this build; choose photos you already have." font-size="0.8125rem" font-weight=700 testId="photos-note"
                         PhotoGrid(photos=newPhotos, prefix="new", remove=removeNewPhoto, busy=false)
                         if photoNoteKey == "new" and photoNote != ""
                           text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="new-photo-note" role="alert"
@@ -624,6 +693,31 @@ component ExperimemoExact
                           text (pending(created) ? "Saving..." : "Save experiment")
                         if createError != ""
                           text createError color="warning" font-size="0.8125rem" font-weight=700 testId="create-error" role="alert"
+      dialog id="photo-source" role="alertdialog" aria-label="Add photos" cancel=sourceCancelled
+        text "Choose how to add experiment photos." testId="photo-source-text"
+        button press=chooseCamera commandfor="photo-source" command="close" testId="photo-source-camera"
+          text "Take Photo"
+        button press=chooseLibrary commandfor="photo-source" command="close" testId="photo-source-library"
+          text "Choose from Library"
+        button commandfor="photo-source" command="close" testId="photo-source-cancel"
+          text "Cancel"
+      dialog id="camera-dialog" aria-label="Take a photo" cancel=cameraDismissed closedby="none"
+        column gap=12 padding=16 width="100%" box-sizing="border-box"
+          text "Take a photo" font-size="1.0625rem" font-weight=800
+          if camOpenError != ""
+            text camOpenError color="warning" font-size="0.875rem" line-height="1.25rem" font-weight=700 testId="camera-error" role="alert"
+          else
+            if camTrack == ""
+              text "Opening the camera. Allow access if you are asked." font-size="0.875rem" testId="camera-opening"
+            else
+              exact-camera srcObject=camTrack object-fit="cover" width="100%" height=300 testId="viewfinder"
+          if camShotError != ""
+            text camShotError color="warning" font-size="0.875rem" line-height="1.25rem" font-weight=700 testId="camera-shot-error" role="alert"
+          row gap=12 flex-wrap="wrap"
+            button press=shutter disabled=(camTrack == "" or pending(camShot)) testId="camera-shutter" aria-label="Take photo" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem" padding="0.5rem 1rem"
+              text (pending(camShot) ? "Saving..." : "Take photo")
+            button press=closeCamera testId="camera-close" aria-label="Close camera" border="1px solid var(--brand)" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem" padding="0.5rem 1rem"
+              text "Close"
       input type="file" accept="image/*" multiple=true id="photo-picker" testId="photo-picker" display="none" change=photosPicked cancel=photosCancelled
       row role="tablist" appearance="none" display=(wide ? "none" : "flex")
         button role="tab" aria-controls="panel-new" aria-selected=(nav.tab == "new") press=pick("new") testId="tab-new" flex=1
@@ -842,7 +936,6 @@ component ExperimentEditor
               PhotoGrid(photos=draftPhotos, prefix="draft", remove=dropDraftPhoto, busy=false)
               if photoNoteKey == `draft-${x.id}` and photoNote != ""
                 text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="draft-photo-note" role="alert"
-              text "Taking a photo with the camera is not available in this build; choose photos you already have." font-size="0.8125rem" line-height="1.25rem" testId="result-photos-note"
             if removeResultError != ""
               text removeResultError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="result-remove-error" role="alert"
             for r in x.entries key=r.id
@@ -852,7 +945,6 @@ component ExperimentEditor
             text "Keep your reference photos with the experiment so everything stays easy to review later." font-size="0.875rem" line-height="1.25rem"
             button press=addExpPhotos disabled=photoBusy testId="exp-add-photos" aria-label="Add photos to the experiment" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
               text "Add photos" font-weight=800 font-size="0.875rem"
-            text "Taking a photo with the camera is not available in this build; choose photos you already have." font-size="0.8125rem" line-height="1.25rem" testId="exp-photos-note"
             PhotoGrid(photos=x.photoList, prefix="exp", remove=dropExpPhoto, busy=photoBusy)
             if photoNoteKey == `exp-${x.id}` and photoNote != ""
               text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="exp-photo-note" role="alert"

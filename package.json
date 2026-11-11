@@ -5,5 +5,8 @@
     "build": "bun exact.mjs web-build --out dist",
     "start": "bun exact.mjs serve dist"
   },
-  "dependencies": {}
+  "dependencies": {
+    "@exact/media-capture": "file:../../../temp/exact-upstream/packages/media-capture",
+    "@exact/camera": "file:../../../temp/exact-upstream/packages/camera"
+  }
 }

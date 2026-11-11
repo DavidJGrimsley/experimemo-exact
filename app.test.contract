@@ -731,6 +731,7 @@ test "an experiment photo is picked, previewed, kept after a reload, and removed
   at "/experiment/experiment-seed-2"
   clock data
   tap "exp-add-photos"
+  tap "photo-source-library"
   pick "photo-picker" "fixtures/sample.png"
   clock data
   clock settle
@@ -757,9 +758,11 @@ test "photos on an experiment, a result and a result draft stay separate"
   at "/experiment/experiment-seed-1"
   clock data
   tap "exp-add-photos"
+  tap "photo-source-library"
   pick "photo-picker" "fixtures/sample.png"
   clock data
   tap "result-add-photos-result-seed-1"
+  tap "photo-source-library"
   pick "photo-picker" "fixtures/sample.png"
   clock data
   expect tree has "photo-photo-1767225600000-1-0"
@@ -781,6 +784,7 @@ test "a photo only result is saved from the draft and its last photo cannot be r
   at "/experiment/experiment-seed-2"
   clock data
   tap "draft-add-photos"
+  tap "photo-source-library"
   pick "photo-picker" "fixtures/sample.png"
   clock data
   clock settle
@@ -807,6 +811,7 @@ test "cancelling the picker says so and changes nothing"
   at "/experiment/experiment-seed-2"
   clock data
   tap "exp-add-photos"
+  tap "photo-source-library"
   pick "photo-picker" cancel
   clock data
   expect text "exp-photo-note" == "Photo selection cancelled. Nothing was changed."
@@ -820,11 +825,13 @@ test "cancelling the picker says so and changes nothing"
 
 test "New keeps picked photos with the saved record, and a removed one is not saved"
   tap "new-add-photos"
+  tap "photo-source-library"
   pick "photo-picker" "fixtures/sample.png"
   clock data
   clock settle
   expect tree has "photos-new"
   tap "new-add-photos"
+  tap "photo-source-library"
   pick "photo-picker" "fixtures/sample.png"
   clock data
   clock settle
@@ -854,6 +861,7 @@ test "a photo change leaves the other fields and a waiting autosave alone"
   clock data
   type "edit-observations" "Typed before the photo."
   tap "exp-add-photos"
+  tap "photo-source-library"
   pick "photo-picker" "fixtures/sample.png"
   clock +700
   clock data
@@ -868,3 +876,15 @@ test "a photo change leaves the other fields and a waiting autosave alone"
   expect text "edit-observations" == "Typed before the photo."
   expect tree has "photos-exp"
   expect text "edit-category" == "Physics"
+
+test "Add photos asks Take Photo, Choose from Library or Cancel, and Cancel changes nothing"
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  tap "exp-add-photos"
+  expect text "photo-source-text" == "Choose how to add experiment photos."
+  expect tree has "photo-source-camera"
+  expect tree has "photo-source-library"
+  tap "photo-source-cancel"
+  expect tree missing "photos-exp"
