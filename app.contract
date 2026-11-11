@@ -1,24 +1,180 @@
-// Experimemo: the view. app.ts answers what it asks for. Colours, fonts,
-// sizes and the safe area are left unsaid, so each platform supplies its own:
-// the header is the navigation bar, its heading the title, its button a bar item.
-shape Greeting
-  text: string
+// Experimemo, visual foundation: the branded shell, New and Track. Colours live in
+// app.tamber (the reference theme tokens, light and dark by the system scheme).
+// Not built here: saving, persistence, photos, the editor, the app-info settings.
+font "Yellowtail" = "assets/fonts/Yellowtail-Regular.ttf"
+
+shape Experiment
+  id: string
+  title: string
+  meta: string
+  status: string
+  complete: bool
+  hypothesis: string
+  observations: string
+  results: string
+  planned: string
+  conclusion: string
 
 routes nav
-  home "/"
+  tab new "/"
+    info "/info"
+  tab track "/track"
+  notfound
 
 component ExperimemoExact
-  resource greeting = greeting("Experimemo") as shape Greeting
-  state liked = false
-  action like
-    liked = not liked
+  resource experiments = experiments() as shape Experiment[] else empty()
+  state title = ""
+  state category = ""
+  state hypothesis = ""
+  state procedure = ""
+  state dataPlan = ""
+  state observations = ""
+  state fieldNotes = ""
+  state conclusion = ""
+  state planned = "0"
+  state titleError = ""
+  state hypothesisError = ""
+  state procedureError = ""
+  state notice = ""
+  action pick(name: string)
+    nav = select(nav, name)
+  action follow(url: string)
+    nav = go(nav, url)
+  action editTitle(v: string)
+    title = v
+    titleError = ""
+  action editCategory(v: string)
+    category = v
+  action editHypothesis(v: string)
+    hypothesis = v
+    hypothesisError = ""
+  action editProcedure(v: string)
+    procedure = v
+    procedureError = ""
+  action editDataPlan(v: string)
+    dataPlan = v
+  action editObservations(v: string)
+    observations = v
+  action editFieldNotes(v: string)
+    fieldNotes = v
+  action editConclusion(v: string)
+    conclusion = v
+  action editPlanned(v: string)
+    planned = v
+  action save
+    titleError = (title.trim() == "" ? "Give this experiment a name." : "")
+    hypothesisError = (hypothesis.trim() == "" ? "Capture the question or expectation you are testing." : "")
+    procedureError = (procedure.trim() == "" ? "Add the repeatable steps before saving." : "")
+    notice = (title.trim() == "" or hypothesis.trim() == "" or procedure.trim() == "" ? "" : "Saving is not available in this visual build yet; nothing was stored.")
   view
-    main testId="root" navigationKey=`${top(nav).id}` navigationBack="back" width="100%" height="100%"
-      for e in stack(nav) key=e.id
-        column navigationKey=`${e.id}` navigationScroll="content" position="absolute" inset=0 display="flex" flex-direction="column"
-          header display="flex" align-items="center"
-            text "Experimemo" role="heading" aria-level=1 flex=1
-            button press=like aria-label=(liked ? "Unlike" : "Like") testId="like"
-              image (liked ? "symbol:heart-fill" : "symbol:heart")
-          scroll id="content" flex=1 min-height=0 padding=16
-            text greeting.text testId="greeting"
+    main testId="root" navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow width="100%" height="100%" display="flex" flex-direction="column" background-color="surface.page" color="ink" accent-color="brand"
+      column flex=1 min-height=0 position="relative"
+        for t in nav.tabs key=t.name
+          column role="tabpanel" id=`panel-${t.name}` position="absolute" inset=0
+            for e in t.stack key=e.id
+              column navigationKey=`${e.id}` navigationScroll=`content-${e.id}` position="absolute" inset=0 background-color="surface.page"
+                if e.name == "notfound"
+                  column flex=1 align-items="center" justify-content="center" gap=12 padding=20 testId="notfound"
+                    text "This screen does not exist" role="heading" aria-level=1 font-size="1.75rem" font-weight=800
+                    text "Head back to the main app to create or track your experiments." font-size="0.9375rem" line-height="1.375rem" text-align="center"
+                    link href="/" testId="go-home" background-color="brand" color="ink.on-brand" border-radius=12 padding="12px 16px" font-weight=800
+                      text "Go home"
+                else if e.name == "info"
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    column padding=20 gap=16 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
+                      header appearance="none"
+                        text "App info" role="heading" aria-level=1 font-size="1.75rem" font-weight=800
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "Settings, About and Feedback are not built in this visual slice." font-size="0.875rem" line-height="1.25rem" testId="info-note"
+                      link href="/" testId="info-back" border="1px solid var(--brand)" border-radius=999 padding="12px 16px" align-self="flex-start"
+                        text "Back to New" color="ink" font-weight=800 font-size="0.875rem"
+                else if e.name == "track"
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    column padding=20 gap=20 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
+                      header appearance="none" display="flex" flex-wrap="wrap" align-items="flex-start" gap=12
+                        column flex-grow=1 flex-basis="12rem" min-width=0 gap=8
+                          text "Track experiments" role="heading" aria-level=1 font-size="1.75rem" font-weight=800 line-height=1.25
+                          text "Review every experiment in one place and reopen any record to keep adding observations, notes, and photos." font-size="0.9375rem" line-height="1.375rem"
+                        link href="/info" aria-label="Open app info and settings" testId="info-track" width=40 height=40 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
+                          image "symbol:info" font-size="1.375rem"
+                      column gap=10
+                        text "ACTIVE" font-size="0.8125rem" font-weight=800
+                        column gap=12 testId="track-list"
+                          for x in experiments key=x.id
+                            column background-color="surface.card" border=(x.complete ? "1px solid var(--secondary)" : "1px solid var(--brand)") border-radius=12 padding=16 gap=10 testId=`card-${x.id}` role="group" aria-label=x.title
+                              row gap=10 flex-wrap="wrap" align-items="flex-start"
+                                column flex-grow=1 flex-basis="10rem" min-width=0 gap=4
+                                  text x.title font-size="1rem" font-weight=800
+                                  text x.meta font-size="0.75rem" line-height="1.125rem"
+                                text x.status background-color=(x.complete ? "secondary" : "brand") color="ink.on-brand" border-radius=999 padding="4px 10px" font-size="0.75rem" font-weight=800
+                              column gap=4
+                                text "Hypothesis" font-size="0.75rem" font-weight=800
+                                text x.hypothesis font-size="0.875rem" line-height="1.25rem"
+                                text "Observations" font-size="0.75rem" font-weight=800
+                                text x.observations font-size="0.875rem" line-height="1.25rem"
+                                text "Results" font-size="0.75rem" font-weight=800
+                                text x.results font-size="0.875rem" line-height="1.25rem"
+                              row gap=12 flex-wrap="wrap"
+                                text x.planned font-size="0.75rem" font-weight=700
+                                text x.conclusion font-size="0.75rem" font-weight=700
+                else
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    column padding=20 gap=16 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
+                      header appearance="none" display="flex" flex-wrap="wrap" align-items="flex-start" gap=12
+                        column flex-grow=1 flex-basis="12rem" min-width=0 gap=8
+                          text "Experimemo" role="heading" aria-level=1 font-family="Yellowtail" font-size="2rem" font-weight=400 line-height="2.5rem"
+                          text "Create a new experiment plan now, then update observations, results, notes, and photos as it unfolds." font-size="0.9375rem" line-height="1.375rem"
+                        link href="/info" aria-label="Open app info and settings" testId="info-new" width=40 height=40 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
+                          image "symbol:info" font-size="1.375rem"
+                      column gap=12
+                        column background-color="surface.card" border=(titleError == "" ? "1px solid var(--brand)" : "1px solid var(--warning)") border-radius=12 padding=16 gap=8
+                          text "Experiment title" font-size="0.9375rem" font-weight=800
+                          input value=title input=editTitle placeholder="Plant growth with indirect sunlight" aria-label="Experiment title" aria-invalid=(titleError != "") testId="field-title" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
+                          if titleError != ""
+                            text titleError color="warning" font-size="0.8125rem" font-weight=700 testId="error-title"
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+                          text "Category" font-size="0.9375rem" font-weight=800
+                          input value=category input=editCategory placeholder="Botany, Chemistry, Physics" aria-label="Category" testId="field-category" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
+                        column background-color="surface.card" border=(hypothesisError == "" ? "1px solid var(--brand)" : "1px solid var(--warning)") border-radius=12 padding=16 gap=8
+                          text "Hypothesis" font-size="0.9375rem" font-weight=800
+                          textarea value=hypothesis input=editHypothesis placeholder="What do you expect to happen?" aria-label="Hypothesis" aria-invalid=(hypothesisError != "") testId="field-hypothesis" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+                          if hypothesisError != ""
+                            text hypothesisError color="warning" font-size="0.8125rem" font-weight=700 testId="error-hypothesis"
+                        column background-color="surface.card" border=(procedureError == "" ? "1px solid var(--brand)" : "1px solid var(--warning)") border-radius=12 padding=16 gap=8
+                          text "Procedure" font-size="0.9375rem" font-weight=800
+                          textarea value=procedure input=editProcedure placeholder="List the setup, materials, and repeatable steps." aria-label="Procedure" aria-invalid=(procedureError != "") testId="field-procedure" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+                          if procedureError != ""
+                            text procedureError color="warning" font-size="0.8125rem" font-weight=700 testId="error-procedure"
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+                          text "Data collection plan" font-size="0.9375rem" font-weight=800
+                          textarea value=dataPlan input=editDataPlan placeholder="What measurements, photos, and observations will you capture?" aria-label="Data collection plan" testId="field-dataplan" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+                          text "Observations" font-size="0.9375rem" font-weight=800
+                          textarea value=observations input=editObservations placeholder="You can leave this blank until you start recording observations." aria-label="Observations" testId="field-observations" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+                          text "Field notes" font-size="0.9375rem" font-weight=800
+                          textarea value=fieldNotes input=editFieldNotes placeholder="Capture reminders, context, or setup details." aria-label="Field notes" testId="field-notes" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+                          text "Conclusion" font-size="0.9375rem" font-weight=800
+                          textarea value=conclusion input=editConclusion placeholder="Summarize what the experiment shows when you are ready." aria-label="Conclusion" testId="field-conclusion" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+                          text "Planned photo count" font-size="0.9375rem" font-weight=800
+                          input value=planned input=editPlanned inputmode="numeric" placeholder="0" aria-label="Planned photo count" testId="field-planned" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "Photos" font-size="1.0625rem" font-weight=800
+                        text "Add photos now or attach them later from the experiment record." font-size="0.875rem" line-height="1.25rem"
+                        text "Photo capture is not available in this visual build." font-size="0.8125rem" font-weight=700 testId="photos-note"
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "Save and continue later" font-size="1.0625rem" font-weight=800
+                        text "Your experiment appears in Track right away so you can keep building it out whenever you need to." font-size="0.875rem" line-height="1.25rem"
+                        button press=save testId="save" aria-label="Save experiment" background-color="secondary" color="ink.on-brand" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem"
+                          text "Save experiment"
+                        if notice != ""
+                          text notice font-size="0.8125rem" font-weight=700 testId="notice" role="status"
+      row role="tablist"
+        button role="tab" aria-controls="panel-new" aria-selected=(nav.tab == "new") press=pick("new") testId="tab-new" flex=1
+          image "symbol:add"
+          text "New"
+        button role="tab" aria-controls="panel-track" aria-selected=(nav.tab == "track") press=pick("track") testId="tab-track" flex=1
+          image "symbol:package"
+          text "Track"

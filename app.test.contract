@@ -1,7 +1,20 @@
-test "the greeting loads"
+test "starts on New with the form"
   expect tree has "root"
-  expect text "greeting" == "Hello from Experimemo."
+  expect tree has "field-title"
+  expect tree has "tab-new"
 
-test "the header's button likes it"
-  tap "like"
-  expect state liked == true
+test "empty save shows the reference validation messages"
+  tap "save"
+  expect text "error-title" == "Give this experiment a name."
+  expect text "error-hypothesis" == "Capture the question or expectation you are testing."
+  expect text "error-procedure" == "Add the repeatable steps before saving."
+
+test "Track shows both example cards"
+  tap "tab-track"
+  expect tree has "card-experiment-seed-1"
+  expect tree has "card-experiment-seed-2"
+
+test "the info action opens app info"
+  tap "info-new"
+  clock settle
+  expect tree has "info-note"
