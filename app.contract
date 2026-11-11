@@ -1,7 +1,7 @@
 // Experimemo, visual foundation: the branded shell, New and Track. Colours live in
 // app.tamber (the reference theme tokens, light and dark by the system scheme).
 // Records are app.ts's (experiment-data.ts, one file). Not built here: result entries, photos,
-// delete and reset, autosave (the editor saves on a button).
+// autosave (the editor saves on a button).
 font "Yellowtail" = "assets/fonts/Yellowtail-Regular.ttf"
 
 shape Experiment
@@ -36,6 +36,7 @@ shape Time
 routes nav
   tab new "/"
     info "/info"
+      delete "/info/delete"
   tab track "/track"
     experiment "/experiment/:id"
   onboarding "/onboarding"
@@ -48,6 +49,10 @@ component ExperimemoExact
   mutation created as shape Reply refreshes experiments then afterCreate
   mutation saved as shape Reply refreshes experiments
   mutation statusSaved as shape Reply refreshes experiments
+  mutation removed as shape Reply refreshes experiments
+  mutation resetDone as shape Reply refreshes experiments then afterReset
+  state aimedId = ""
+  state aimedTitle = ""
   state made = 0
   state createError = ""
   state title = ""
@@ -70,7 +75,30 @@ component ExperimemoExact
   derive loadError = match failure(experiments) { case some(f) => f.message, case none => "" }
   derive savedError = match saved { case some(r) => r.error, case none => "" }
   derive savedId = match saved { case some(r) => r.id, case none => "" }
+  derive removedError = match removed { case some(r) => r.error, case none => "" }
+  derive resetError = match resetDone { case some(r) => r.error, case none => "" }
   derive statusError = match statusSaved { case some(r) => r.error, case none => "" }
+  action done
+    nav = back(nav)
+  // A delete asks first, naming the record; Cancel leaves it alone.
+  action askDelete(id: string, title: string)
+    aimedId = id
+    aimedTitle = title
+    showModal("delete-confirm")
+  action confirmDelete
+    if not pending(removed)
+      send removed = deleteExperimentRecord(aimedId)
+  action askReset
+    showModal("reset-confirm")
+  action confirmReset
+    if not pending(resetDone)
+      send resetDone = resetExperimentRecords()
+  // Leave App info for an empty Track only when the reply says the file was cleared.
+  action afterReset
+    if resetError == "" and not failed(resetDone)
+      let fromDelete = top(nav).name == "delete" ? back(nav) : nav
+      let fromInfo = top(fromDelete).name == "info" ? back(fromDelete) : fromDelete
+      nav = select(fromInfo, "track")
   action reload
     refresh experiments
   action pickNew
@@ -152,6 +180,33 @@ component ExperimemoExact
                     text "Head back to the main app to create or track your experiments." font-size="0.9375rem" line-height="1.375rem" text-align="center"
                     link href="/" testId="go-home" background-color="brand" color="ink.on-brand" border-radius=12 padding="12px 16px" font-weight=800
                       text "Go home"
+                else if e.name == "delete"
+                  header
+                    text "Delete experiments" role="heading" aria-level=1 -exact-fit="shrink"
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    column padding=20 gap=12 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
+                      if pending(experiments)
+                        text "Loading experiments…" font-size="0.9375rem" role="status" testId="delete-loading"
+                      else if failed(experiments)
+                        column background-color="surface.card" border="1px solid var(--warning)" border-radius=12 padding=16 gap=10 testId="delete-failed"
+                          text "Experiments could not be read" font-size="1.0625rem" font-weight=800
+                          text loadError font-size="0.875rem" line-height="1.25rem"
+                          button press=reload testId="delete-retry" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+                            text "Try again" font-weight=800 font-size="0.875rem"
+                      else if experiments.length == 0
+                        text "There are no saved experiments to remove." font-size="0.9375rem" line-height="1.375rem" testId="delete-empty"
+                      else
+                        for x in experiments key=x.id
+                          row gap=10 flex-wrap="wrap" align-items="center" background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=12 testId=`delete-row-${x.id}`
+                            column flex-grow=1 flex-basis="12rem" min-width=0 gap=2
+                              text x.title font-size="0.9375rem" font-weight=800
+                              text x.meta font-size="0.75rem" line-height="1.125rem"
+                            button press=askDelete(x.id, x.title) disabled=pending(removed) aria-label=`Delete ${x.title}` testId=`delete-${x.id}` background-color="danger" color="ink.on-danger" border-radius=999 min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0
+                              image "symbol:close"
+                      if removedError != ""
+                        text removedError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="delete-error" role="alert"
+                      button press=done testId="delete-done" border="1px solid var(--brand)" border-radius=14 min-height="3rem" padding="0.5rem 1rem" max-width="100%" box-sizing="border-box"
+                        text "Done" font-weight=800 font-size="0.875rem"
                 else if e.name == "info"
                   header
                     text "App info" role="heading" aria-level=1 -exact-fit="shrink"
@@ -159,11 +214,12 @@ component ExperimemoExact
                     column padding=20 gap=16 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
                       column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
                         text "SETTINGS" font-size="0.8125rem" font-weight=800
-                        button testId="delete-experiments" aria-disabled=true aria-describedby="settings-unavailable" border="1px solid var(--danger)" border-radius=14 min-height="3.25rem" padding="0.5rem 1rem" opacity=0.65
-                          text "Delete experiments" font-weight=800 font-size="0.875rem" -exact-fit="shrink"
-                        button testId="reset-app" aria-disabled=true aria-describedby="settings-unavailable" border="1px solid var(--secondary)" border-radius=14 min-height="3.25rem" padding="0.5rem 1rem" opacity=0.65
-                          text "Reset app" font-weight=800 font-size="0.875rem" -exact-fit="shrink"
-                        text "Deleting and resetting are unavailable in this build: experiment storage is not connected yet, so nothing can be deleted or reset here." id="settings-unavailable" testId="settings-unavailable" font-size="0.8125rem" line-height="1.25rem" font-weight=700
+                        link href="/info/delete" testId="delete-experiments" border="1px solid var(--danger)" border-radius=14 min-height="3.25rem" padding="0.5rem 1rem" display="flex" align-items="center" justify-content="center" max-width="100%" box-sizing="border-box"
+                          text "Delete experiments" color="ink" font-weight=800 font-size="0.875rem" -exact-fit="shrink"
+                        button press=askReset disabled=pending(resetDone) testId="reset-app" border="1px solid var(--secondary)" border-radius=14 min-height="3.25rem" padding="0.5rem 1rem" max-width="100%" box-sizing="border-box"
+                          text (pending(resetDone) ? "Resetting..." : "Reset app") font-weight=800 font-size="0.875rem" -exact-fit="shrink"
+                        if resetError != ""
+                          text resetError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="reset-error" role="alert"
                       column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
                         text "ABOUT" font-size="0.8125rem" font-weight=800
                         InfoRow(title="About Experimemo", body="Experimemo helps you capture experiment setup, observations, notes, and photos without slowing the work down.", url="", testId="row-about")
@@ -265,10 +321,10 @@ component ExperimemoExact
                             text "Try again" font-weight=800 font-size="0.875rem"
                       else if experiments.length == 0
                         column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="track-empty"
-                          text "No experiments yet" font-size="1.0625rem" font-weight=800
+                          text "No experiments yet" font-size="1.0625rem" font-weight=800 -exact-fit="shrink"
                           text "Create your first experiment to start recording your process and results." font-size="0.875rem" line-height="1.25rem"
-                          button press=pickNew testId="create-experiment" background-color="brand" color="ink.on-brand" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
-                            text "Create experiment" font-weight=800 font-size="0.875rem"
+                          button press=pickNew testId="create-experiment" background-color="brand" color="ink.on-brand" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start" max-width="100%" box-sizing="border-box"
+                            text "Create experiment" font-weight=800 font-size="0.875rem" -exact-fit="shrink"
                       else
                         if experiments.filter(x => not x.complete).length > 0
                           column gap=10 testId="section-active"
@@ -343,6 +399,18 @@ component ExperimemoExact
         button role="tab" aria-controls="panel-track" aria-selected=(nav.tab == "track") press=pick("track") testId="tab-track" flex=1
           image "symbol:package"
           text "Track"
+      dialog id="delete-confirm" role="alertdialog" aria-label="Delete experiment?"
+        text `This will permanently remove "${aimedTitle}".` testId="delete-confirm-text"
+        button press=confirmDelete destructive=true commandfor="delete-confirm" command="close" testId="delete-confirm-yes"
+          text "Delete"
+        button commandfor="delete-confirm" command="close" testId="delete-confirm-cancel"
+          text "Cancel"
+      dialog id="reset-confirm" role="alertdialog" aria-label="Reset app data?"
+        text "This will permanently remove every experiment and leave the app empty." testId="reset-confirm-text"
+        button press=confirmReset destructive=true commandfor="reset-confirm" command="close" testId="reset-confirm-yes"
+          text "Reset"
+        button commandfor="reset-confirm" command="close" testId="reset-confirm-cancel"
+          text "Cancel"
 
 component InfoRow
   props

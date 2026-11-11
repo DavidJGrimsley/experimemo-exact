@@ -2,6 +2,8 @@ import type { Answer, Result, Sources, Storage } from './app.contract.d.ts';
 import {
   EXPERIMENT_FS_PATH,
   createExperiment,
+  deleteExperiment,
+  resetExperiments,
   getExperimentById,
   listExperiments,
   updateExperiment,
@@ -162,6 +164,29 @@ const sources: Sources = {
       return stored && stored.status === next && stored.updatedAt === at
         ? { ok: true, id, error: '' }
         : unconfirmed(id);
+    } catch (e) {
+      return failure(e);
+    }
+  },
+
+  deleteExperimentRecord: async ([id], _store, storage): Promise<Result<'deleteExperimentRecord'>> => {
+    try {
+      await deleteExperiment(id, storage);
+      // Success only if the file no longer holds it.
+      return (await onDisk(storage)).some((r) => r.id === id)
+        ? { ok: false, id, error: 'The experiment could not be removed from storage, so it was kept.' }
+        : { ok: true, id, error: '' };
+    } catch (e) {
+      return failure(e);
+    }
+  },
+
+  resetExperimentRecords: async (_args, _store, storage): Promise<Result<'resetExperimentRecords'>> => {
+    try {
+      await resetExperiments(storage);
+      return (await onDisk(storage)).length === 0
+        ? { ok: true, id: '', error: '' }
+        : { ok: false, id: '', error: 'The experiments could not be cleared from storage, so nothing was reset.' };
     } catch (e) {
       return failure(e);
     }

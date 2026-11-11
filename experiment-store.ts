@@ -236,3 +236,13 @@ export async function updateExperimentStatus(
   await write(storage, { ...state, experiments: state.experiments.map((e) => (e.id === id ? record : e)) });
   return clone(record);
 }
+
+export async function deleteExperiment(id: string, storage: Storage): Promise<void> {
+  const state = await ready(storage);
+  await write(storage, { ...state, experiments: state.experiments.filter((e) => e.id !== id) });
+}
+
+/** Empties the file and marks it seeded, so the examples are never put back. */
+export async function resetExperiments(storage: Storage): Promise<void> {
+  await write(storage, { bootstrapped: true, experiments: [] });
+}

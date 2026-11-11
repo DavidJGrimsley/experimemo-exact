@@ -10,3 +10,4 @@ theme
   ink.on-brand = #111827  scheme=fixed
   ink.on-secondary = light-dark(#ffffff, #111827)
   danger = #dc2626  scheme=fixed
+  ink.on-danger = #ffffff  scheme=fixed
