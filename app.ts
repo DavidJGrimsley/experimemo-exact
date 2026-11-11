@@ -148,12 +148,18 @@ const cameraPicked = (path: string, type: string, size: number, width: number, h
   path, name: path.split('/').pop() ?? '', type, size, width, height, duration: null,
 });
 
-// The temporary shot is no longer needed once the durable copy (or the failure) is settled; leaving it is harmless.
+// Camera shots are written here by takePhoto; nothing else under it is the app's to remove.
+const CAMERA_TMP = 'app:/tmp/camera/';
+const isCameraTemp = (path: string) => path.startsWith(CAMERA_TMP) && !path.slice(CAMERA_TMP.length).split('/').includes('..');
+
+// The temporary shot is no longer needed once the durable copy (or the failure) is settled. It never
+// throws, so a cleanup that fails cannot hide the error that ended the save; app:/tmp is pruned by the host.
 async function dropCameraTemp(storage: Storage, path: string): Promise<void> {
+  if (!isCameraTemp(path)) return;
   try {
     await (files(storage) as unknown as { fs: { rm(p: string): Promise<void> } }).fs.rm(path);
   } catch {
-    // app:/tmp is pruned by the host.
+    // Already gone, or the host refused: either way nothing refers to it.
   }
 }
 
@@ -264,7 +270,8 @@ const sources: Sources = {
     }
   },
 
-  // A camera photo waits under app:/tmp/camera; it becomes a durable copy exactly like a picked file, then the temporary file goes.
+  // A camera photo waits under app:/tmp/camera; it becomes a durable copy exactly like a picked file. The
+  // temporary file goes whether or not that worked: a failed save leaves nothing to retry from it.
   stageCameraPhoto: async ([idBase, ms, path, type, size, width, height], _store, storage): Promise<Result<'stageCameraPhoto'>> => {
     try {
       const picked = [cameraPicked(path, type, size, width, height)];
@@ -272,10 +279,11 @@ const sources: Sources = {
         () => persistPickedPhotos(picked, storage, { now: isoAt(ms), scope: 'experiment', generateId: (i) => `${idBase}-${i}` }),
         files(storage),
       );
-      await dropCameraTemp(storage, path);
       return photoReply(true, idBase, '', assets.map(photoView));
     } catch (e) {
       return photoReply(false, idBase, photoFailure(e));
+    } finally {
+      await dropCameraTemp(storage, path);
     }
   },
 
@@ -288,11 +296,19 @@ const sources: Sources = {
         files(storage),
         { now: isoAt(ms) },
       );
-      await dropCameraTemp(storage, path);
       return saved ? photoReply(true, idBase, '') : photoReply(false, idBase, gone);
     } catch (e) {
       return photoReply(false, idBase, photoFailure(e));
+    } finally {
+      await dropCameraTemp(storage, path);
     }
+  },
+
+  // A shot that landed after its camera sheet closed: its temporary file goes and nothing refers to it.
+  discardCameraShot: async ([path], _store, storage): Promise<Result<'discardCameraShot'>> => {
+    if (!isCameraTemp(path)) return photoReply(false, path, 'Only a camera shot can be discarded.');
+    await dropCameraTemp(storage, path);
+    return photoReply(true, path, '');
   },
 
   removePhotoRecord: async ([expId, resultId, photoId, ms], _store, storage): Promise<Result<'removePhotoRecord'>> => {

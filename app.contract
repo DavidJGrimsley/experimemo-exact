@@ -99,6 +99,7 @@ component ExperimemoExact
   mutation camOpened as shape MediaStream then armCamera
   mutation camShot as shape CameraPhoto then afterShot
   mutation camStopped as shape MediaStreamTrack
+  mutation camDropped as shape PhotoReply
   mutation resultAdded as shape Reply refreshes experiments then afterResultAdd
   mutation resultEdited as shape Reply refreshes experiments then afterResultEdit
   mutation resultRemoved as shape Reply refreshes experiments
@@ -134,8 +135,18 @@ component ExperimemoExact
   state photoNoteKey = ""
   state camOpen = false
   state camTrack = ""
+  // Each open of the camera sheet is one session; closing it ends it. A shot keeps the session and the
+  // destination it was taken for, so one that lands after its sheet closed is thrown away, never filed elsewhere.
+  state camSession = 0
+  state shotSession = 0
+  state shotScope = ""
+  state shotExp = ""
+  state shotResult = ""
+  // Where the photos being staged go, fixed when they are sent: New's or the result draft's.
+  state stageScope = ""
   derive camOpenError = match failure(camOpened) { case some(f) => (f.code == "NotAllowedError" or f.code == "denied" ? "Camera access was denied. Allow the camera in your browser or system settings, then choose Take Photo again." : (f.code == "NotFoundError" ? "No camera was found on this device." : `The camera could not be opened: ${f.message}`)), case none => "" }
   derive camShotError = match failure(camShot) { case some(f) => `The photo could not be taken: ${f.message}`, case none => "" }
+  derive shotErrorShown = shotSession == camSession ? camShotError : ""
   derive shotPath = match camShot { case some(p) => p.path, case none => "" }
   derive shotType = match camShot { case some(p) => p.type, case none => "" }
   derive shotSize = match camShot { case some(p) => p.size, case none => 0 }
@@ -305,6 +316,7 @@ component ExperimemoExact
     else
       camOpen = true
       camTrack = ""
+      camSession = camSession + 1
       showModal("camera-dialog")
       send camOpened = getUserMedia(video=true)
   // A stream that arrives after the sheet closed is stopped at once, so the camera never stays on.
@@ -320,6 +332,7 @@ component ExperimemoExact
         camTrack = ""
   action closeCamera
     camOpen = false
+    camSession = camSession + 1
     if camTrack != ""
       send camStopped = stopTrack(track=camTrack)
     camTrack = ""
@@ -327,6 +340,7 @@ component ExperimemoExact
     photoNote = "Photo capture cancelled. Nothing was changed."
   action cameraDismissed
     camOpen = false
+    camSession = camSession + 1
     if camTrack != ""
       send camStopped = stopTrack(track=camTrack)
     camTrack = ""
@@ -336,19 +350,30 @@ component ExperimemoExact
       let at = time.epochAtZero + performanceNow()
       let n = photoMade + 1
       photoMade = n
+      shotSession = camSession
+      shotScope = pickScope
+      shotExp = pickExp
+      shotResult = pickResult
       send camShot = takePhoto(track=camTrack, path=`app:/tmp/camera/shot-${at}-${n}`)
+  // A shot from a sheet since closed (or closed and opened again, perhaps for another record) is
+  // stale: its file is removed and nothing else changes; the open sheet, if any, is left alone.
   action afterShot
     if camShotError == "" and not failed(camShot)
-      let at = time.epochAtZero + performanceNow()
-      let n = photoMade
-      camOpen = false
-      send camStopped = stopTrack(track=camTrack)
-      camTrack = ""
-      close("camera-dialog")
-      if pickScope == "new" or pickScope == "draft"
-        send staged = stageCameraPhoto(`photo-${at}-${n}`, at, shotPath, shotType, shotSize, shotWidth, shotHeight)
+      if shotSession != camSession or not camOpen
+        send camDropped = discardCameraShot(shotPath)
       else
-        send attached = attachCameraPhoto(pickExp, pickResult, `photo-${at}-${n}`, at, shotPath, shotType, shotSize, shotWidth, shotHeight)
+        let at = time.epochAtZero + performanceNow()
+        let n = photoMade
+        camOpen = false
+        camSession = camSession + 1
+        send camStopped = stopTrack(track=camTrack)
+        camTrack = ""
+        close("camera-dialog")
+        if shotScope == "new" or shotScope == "draft"
+          stageScope = shotScope
+          send staged = stageCameraPhoto(`photo-${at}-${n}`, at, shotPath, shotType, shotSize, shotWidth, shotHeight)
+        else
+          send attached = attachCameraPhoto(shotExp, shotResult, `photo-${at}-${n}`, at, shotPath, shotType, shotSize, shotWidth, shotHeight)
   action photosCancelled
     photoNote = "Photo selection cancelled. Nothing was changed."
   action photosPicked(files: Picked[])
@@ -359,6 +384,7 @@ component ExperimemoExact
       let n = photoMade + 1
       photoMade = n
       if pickScope == "new" or pickScope == "draft"
+        stageScope = pickScope
         send staged = stagePhotoFiles(`photo-${at}-${n}`, at, files)
       else
         send attached = attachPhotoRecord(pickExp, pickResult, `photo-${at}-${n}`, at, files)
@@ -366,7 +392,7 @@ component ExperimemoExact
       photoNote = "Another photo change is still saving. Try again in a moment."
   action afterStage
     if stagedError == "" and not failed(staged)
-      if pickScope == "new"
+      if stageScope == "new"
         newPhotos = newPhotos.concat(stagedPhotos)
       else
         draftPhotos = draftPhotos.concat(stagedPhotos)
@@ -711,8 +737,8 @@ component ExperimemoExact
               text "Opening the camera. Allow access if you are asked." font-size="0.875rem" testId="camera-opening"
             else
               exact-camera srcObject=camTrack object-fit="cover" width="100%" height=300 testId="viewfinder"
-          if camShotError != ""
-            text camShotError color="warning" font-size="0.875rem" line-height="1.25rem" font-weight=700 testId="camera-shot-error" role="alert"
+          if shotErrorShown != ""
+            text shotErrorShown color="warning" font-size="0.875rem" line-height="1.25rem" font-weight=700 testId="camera-shot-error" role="alert"
           row gap=12 flex-wrap="wrap"
             button press=shutter disabled=(camTrack == "" or pending(camShot)) testId="camera-shutter" aria-label="Take photo" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem" padding="0.5rem 1rem"
               text (pending(camShot) ? "Saving..." : "Take photo")

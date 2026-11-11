@@ -41,6 +41,40 @@ const notFound = () => {
 const noMediaDevices = () => {
   Object.defineProperty(navigator, 'mediaDevices', { value: undefined, configurable: true });
 };
+// A shot that takes as long as the test says: with __holdNext set, the next ImageCapture.takePhoto waits for
+// __releaseShot() and then succeeds with a generated frame (so a track stopped meanwhile cannot fail it).
+const holdShots = () => {
+  const real = ImageCapture.prototype.takePhoto;
+  ImageCapture.prototype.takePhoto = async function (...a) {
+    if (!globalThis.__holdNext) return real.apply(this, a);
+    globalThis.__holdNext = false;
+    await new Promise((release) => { globalThis.__releaseShot = release; globalThis.__shotHeld = true; });
+    const c = Object.assign(document.createElement('canvas'), { width: 64, height: 48 });
+    c.getContext('2d').fillRect(0, 0, 64, 48);
+    return new Promise((done, fail) => c.toBlob((b) => (b ? done(b) : fail(new Error('no frame'))), 'image/jpeg', 0.9));
+  };
+};
+// The app's files whose path holds `part`, read from the web host's IndexedDB file store.
+const storedFiles = (page, part) => page.evaluate(async (part) => {
+  const req = (r) => new Promise((ok, no) => { r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+  const out = [];
+  for (const d of (await indexedDB.databases()).filter((d) => d.name?.startsWith('exact-storage:'))) {
+    const db = await req(indexedDB.open(d.name));
+    if (db.objectStoreNames.contains('files')) out.push(...(await req(db.transaction('files').objectStore('files').getAllKeys())).map(String).filter((k) => k.includes(part)));
+    db.close();
+  }
+  return out;
+}, part);
+const noCameraTemps = (page) => page.waitForFunction(async () => {
+  const req = (r) => new Promise((ok, no) => { r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+  for (const d of (await indexedDB.databases()).filter((d) => d.name?.startsWith('exact-storage:'))) {
+    const db = await req(indexedDB.open(d.name));
+    const keys = db.objectStoreNames.contains('files') ? await req(db.transaction('files').objectStore('files').getAllKeys()) : [];
+    db.close();
+    if (keys.some((k) => String(k).includes('/tmp/camera/'))) return false;
+  }
+  return true;
+}, null, { timeout: 10000, polling: 250 }).then(() => true, () => false);
 
 const executablePath = process.env.CHROME;
 const fake = ['--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'];
@@ -153,6 +187,72 @@ try {
     await page.getByTestId('editor-title').waitFor();
     check('both experiment photos and the result photo survive a reload',
       await page.waitForFunction(() => document.querySelectorAll('[data-testid="photos-exp"] [data-testid^="photo-photo-"]').length === 2 && /1 photo attached/.test(document.body.innerText), null, { timeout: 10000 }).then(() => true, () => false));
+    await context.close();
+  }
+
+  // --- a shot that lands after its sheet closed is thrown away (held ImageCapture.takePhoto, mocked) ---
+  {
+    const { context, page } = await open(browser, { init: `(${holdShots.toString()})()` });
+    const expPhotos = () => page.locator('[data-testid="photos-exp"] [data-testid^="photo-photo-"]').count();
+    const ready = () => page.waitForFunction(() => { const v = document.querySelector('[data-testid="viewfinder"] video'); return v && v.videoWidth > 0 && !!v.srcObject; }, null, { timeout: 10000 }).then(() => true, () => false);
+    const holdAndClose = async () => {
+      await page.evaluate(() => { globalThis.__holdNext = true; globalThis.__shotHeld = false; });
+      await page.getByTestId('exp-add-photos').click();
+      await page.getByTestId('photo-source-camera').click();
+      await sees(page, 'viewfinder');
+      await ready();
+      await page.getByTestId('camera-shutter').click();
+      await page.waitForFunction(() => globalThis.__shotHeld === true, null, { timeout: 10000 });
+      await page.getByTestId('camera-close').click();
+      await gone(page, 'viewfinder');
+    };
+
+    // closed, then the shot lands
+    await goTrackCard(page, 'Bean sprouts');
+    const sprouts = await expPhotos();
+    await holdAndClose();
+    await page.evaluate(() => globalThis.__releaseShot());
+    const cleaned = await noCameraTemps(page);
+    await settle(page);
+    check('a shot that lands after the camera closed attaches nothing and keeps the cancel note',
+      (await expPhotos()) === sprouts && (await text(page, 'exp-photo-note')) === 'Photo capture cancelled. Nothing was changed.' && !(await sees(page, 'viewfinder', 500)),
+      `${await expPhotos()} photos, was ${sprouts}`);
+    check('the late shot\'s temporary file is removed', cleaned, JSON.stringify(await storedFiles(page, '/tmp/camera/')));
+
+    // closed, the camera opened again for another record, then the first shot lands
+    await holdAndClose();
+    await page.goBack();
+    await page.getByTestId('card-experiment-seed-2').click();
+    await page.getByTestId('editor-title').waitFor();
+    const cooling = await expPhotos();
+    await page.getByTestId('exp-add-photos').click();
+    await page.getByTestId('photo-source-camera').click();
+    await sees(page, 'viewfinder');
+    const reopened = await ready();
+    await page.evaluate(() => globalThis.__releaseShot());
+    const cleanedAgain = await noCameraTemps(page);
+    await settle(page);
+    check('a late shot from the first record is not attached to the record the camera reopened for',
+      reopened && (await expPhotos()) === cooling, `${await expPhotos()} photos, was ${cooling}`);
+    check('the late shot leaves the reopened camera open and live',
+      (await sees(page, 'viewfinder', 500)) && await ready(), await page.evaluate(() => document.body.innerText.slice(0, 200)));
+    check('the late shot\'s temporary file is removed while the new camera is open', cleanedAgain, JSON.stringify(await storedFiles(page, '/tmp/camera/')));
+    await shoot(page);
+    check('the reopened camera\'s own shot attaches to its own record',
+      await page.waitForFunction((n) => document.querySelectorAll('[data-testid="photos-exp"] [data-testid^="photo-photo-"]').length === n + 1, cooling, { timeout: 15000 }).then(() => true, () => false));
+    check('after its own shot no camera temporary file is left', await noCameraTemps(page), JSON.stringify(await storedFiles(page, '/tmp/camera/')));
+
+    await page.reload();
+    await page.getByTestId('editor-title').waitFor();
+    const coolingAfter = await page.waitForFunction((n) => document.querySelectorAll('[data-testid="photos-exp"] [data-testid^="photo-photo-"]').length === n + 1, cooling, { timeout: 10000 }).then(() => true, () => false);
+    await page.goBack();
+    await page.getByTestId('card-experiment-seed-1').click();
+    await page.getByTestId('editor-title').waitFor();
+    await settle(page);
+    check('after a reload the first record still has none of the late shots and the second has only its own',
+      coolingAfter && (await expPhotos()) === sprouts, `${await expPhotos()} photos, was ${sprouts}`);
+    check('the durable photo store holds only the one kept photo', (await storedFiles(page, '/data/photos/')).filter((k) => !k.endsWith('/data/photos')).length === 1,
+      JSON.stringify(await storedFiles(page, '/data/photos/')));
     await context.close();
   }
 
