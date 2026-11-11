@@ -1,7 +1,12 @@
 import type { Answer, Result, Sources, Storage } from './app.contract.d.ts';
 import {
+  PhotoRefused,
   addResultEntry,
+  attachPhotos,
   createExperiment,
+  discardStagedPhoto,
+  removePhoto,
+  stagePhotos,
   deleteResultEntry,
   updateResultNotes,
   deleteExperiment,
@@ -11,14 +16,23 @@ import {
   updateExperimentStatus,
   ResultError,
   type ExperimentFields,
+  type ExperimentPhotoAsset,
   type ExperimentRecord,
   type Storage as StoreStorage,
 } from './experiment-store.ts';
+import { PhotoError, persistPickedPhotos } from './experiment-photos.ts';
 
 // Records live in one file through experiment-store.ts, which runs every operation one at a
 // time and reads each write back: a reply says ok only when the file holds the change.
 const FILE = 'app:/data/experiments.json'; // experiment-store.ts's EXPERIMENT_FS_PATH
-export const grants = [`fs.read ${FILE}`, `fs.write ${FILE}`].join('\n');
+// Picked files arrive under app:/tmp; they are copied into app:/data/photos and referenced from there.
+export const grants = [
+  `fs.read ${FILE}`,
+  `fs.write ${FILE}`,
+  'fs.read app:/tmp',
+  'fs.read app:/data/photos',
+  'fs.write app:/data/photos',
+].join('\n');
 
 const files = (storage: Storage) => storage as unknown as StoreStorage;
 
@@ -34,6 +48,25 @@ const resultStamp = (iso: string) =>
     month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC',
   });
 const isoAt = (ms: number) => new Date(ms).toISOString();
+
+type PhotoView = Result<'attachPhotoRecord'>['photos'][number];
+
+const photoView = (p: ExperimentPhotoAsset): PhotoView => ({
+  id: p.id,
+  uri: p.uri,
+  name: p.fileName ?? '',
+  mime: p.mimeType ?? '',
+  width: p.width,
+  height: p.height,
+});
+const photoAsset = (p: PhotoView): ExperimentPhotoAsset => ({
+  id: p.id,
+  uri: p.uri,
+  fileName: p.name === '' ? null : p.name,
+  mimeType: p.mime === '' ? null : p.mime,
+  width: p.width,
+  height: p.height,
+});
 
 function view(r: ExperimentRecord): Result<'experiments'>[number] {
   const latest = r.resultEntries[0];
@@ -62,7 +95,9 @@ function view(r: ExperimentRecord): Result<'experiments'>[number] {
       stamp: resultStamp(e.recordedAt),
       notes: e.notes,
       photos: e.photoAssets.length,
+      photoItems: e.photoAssets.map(photoView),
     })),
+    photoList: r.photoAssets.map(photoView),
     plannedLabel: `Planned photos: ${r.plannedAttachmentCount}`,
     conclusionLabel: `Conclusion: ${r.conclusionNotes ? 'Ready' : 'Open'}`,
   };
@@ -89,12 +124,30 @@ const failure = (id: string, e: unknown): Result<'createExperimentRecord'> =>
 
 const gone = 'This experiment no longer exists.';
 
+const photoReply = (ok: boolean, id: string, error: string, photos: PhotoView[] = []): Result<'attachPhotoRecord'> => ({
+  ok,
+  id,
+  error,
+  photos,
+});
+
+// What a person reads when a photo could not be taken in; never a code alone.
+function photoFailure(e: unknown): string {
+  if (e instanceof PhotoRefused || e instanceof ResultError) return e.message;
+  if (e instanceof PhotoError) {
+    if (e.code === 'FILE_NOT_FOUND') return 'The chosen photo could not be read. Choose it again.';
+    if (e.code === 'CORRUPT_MEDIA') return 'The chosen photo is empty or damaged, so it was not added.';
+    return `The photo could not be saved: ${e.message}`;
+  }
+  return `Could not save to storage: ${e instanceof Error ? e.message : String(e)}`;
+}
+
 const sources: Sources = {
   experiments: async (_args, _store, storage): Promise<Result<'experiments'>> =>
     (await listExperiments(files(storage))).map(view),
 
   createExperimentRecord: async (
-    [id, ms, title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, planned],
+    [id, ms, title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, planned, photos],
     _store,
     storage,
   ): Promise<Result<'createExperimentRecord'>> => {
@@ -103,7 +156,7 @@ const sources: Sources = {
     }
     try {
       const fields = fieldsOf([title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, planned]);
-      await createExperiment(fields, files(storage), { id, now: isoAt(ms) });
+      await createExperiment(fields, files(storage), { id, now: isoAt(ms), photoAssets: photos.map(photoAsset) });
       return ok(id);
     } catch (e) {
       return failure('', e);
@@ -136,10 +189,15 @@ const sources: Sources = {
     }
   },
 
-  addResultRecord: async ([id, resultId, ms, notes], _store, storage): Promise<Result<'addResultRecord'>> => {
-    if (notes.trim() === '') return refused(resultId, 'Write some result notes before saving.');
+  addResultRecord: async ([id, resultId, ms, notes, photos], _store, storage): Promise<Result<'addResultRecord'>> => {
+    if (notes.trim() === '' && photos.length === 0) return refused(resultId, 'Write some result notes or add a photo before saving.');
     try {
-      const saved = await addResultEntry(id, { id: resultId, recordedAt: isoAt(ms), notes }, files(storage), { now: isoAt(ms) });
+      const saved = await addResultEntry(
+        id,
+        { id: resultId, recordedAt: isoAt(ms), notes, photoAssets: photos.map(photoAsset) },
+        files(storage),
+        { now: isoAt(ms) },
+      );
       return saved ? ok(resultId) : refused(resultId, gone);
     } catch (e) {
       return e instanceof ResultError ? refused(resultId, e.message) : failure(resultId, e);
@@ -161,6 +219,51 @@ const sources: Sources = {
       return saved ? ok(resultId) : refused(resultId, gone);
     } catch (e) {
       return e instanceof ResultError ? refused(resultId, e.message) : failure(resultId, e);
+    }
+  },
+
+  // Picked files become durable copies. Staged ones (New, a result draft) wait, unreferenced, for Save.
+  stagePhotoFiles: async ([idBase, ms, picked], _store, storage): Promise<Result<'stagePhotoFiles'>> => {
+    try {
+      const assets = await stagePhotos(
+        () => persistPickedPhotos(picked, storage, { now: isoAt(ms), scope: 'experiment', generateId: (i) => `${idBase}-${i}` }),
+        files(storage),
+      );
+      return photoReply(true, idBase, '', assets.map(photoView));
+    } catch (e) {
+      return photoReply(false, idBase, photoFailure(e));
+    }
+  },
+
+  attachPhotoRecord: async ([expId, resultId, idBase, ms, picked], _store, storage): Promise<Result<'attachPhotoRecord'>> => {
+    try {
+      const saved = await attachPhotos(
+        { experimentId: expId, resultId },
+        () => persistPickedPhotos(picked, storage, { now: isoAt(ms), scope: resultId === '' ? 'experiment' : 'result', generateId: (i) => `${idBase}-${i}` }),
+        files(storage),
+        { now: isoAt(ms) },
+      );
+      return saved ? photoReply(true, idBase, '') : photoReply(false, idBase, gone);
+    } catch (e) {
+      return photoReply(false, idBase, photoFailure(e));
+    }
+  },
+
+  removePhotoRecord: async ([expId, resultId, photoId, ms], _store, storage): Promise<Result<'removePhotoRecord'>> => {
+    try {
+      const saved = await removePhoto({ experimentId: expId, resultId }, photoId, files(storage), { now: isoAt(ms) });
+      return saved ? photoReply(true, photoId, '') : photoReply(false, photoId, gone);
+    } catch (e) {
+      return photoReply(false, photoId, photoFailure(e));
+    }
+  },
+
+  discardPhotoFile: async ([uri], _store, storage): Promise<Result<'discardPhotoFile'>> => {
+    try {
+      await discardStagedPhoto(uri, files(storage));
+      return photoReply(true, uri, '');
+    } catch (e) {
+      return photoReply(false, uri, photoFailure(e));
     }
   },
 

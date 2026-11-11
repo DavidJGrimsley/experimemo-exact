@@ -133,6 +133,9 @@ export const EXPERIMENT_FS_PATH = 'app:/data/experiments.json';
 export interface FileSystem {
   readFile(path: string): Promise<ArrayBuffer>;
   atomicWriteFile(path: string, data: ArrayBuffer | Uint8Array): Promise<void>;
+  // Photo files only: removing an unreferenced one and finding strays. Absent on a fake, so optional.
+  rm?(path: string): Promise<void>;
+  readdir?(path: string): Promise<string[]>;
 }
 export interface Storage {
   readonly fs: FileSystem;
@@ -239,6 +242,47 @@ async function read(storage: Storage): Promise<FileState> {
   return { bootstrapped: true, experiments: parsed.experiments as ExperimentRecord[] };
 }
 
+export const PHOTOS_DIR = 'app:/data/photos';
+
+const photoUris = (state: FileState): Set<string> => {
+  const uris = new Set<string>();
+  for (const e of state.experiments) {
+    e.photoAssets.forEach((p) => uris.add(p.uri));
+    e.resultEntries.forEach((r) => r.photoAssets.forEach((p) => uris.add(p.uri)));
+  }
+  return uris;
+};
+
+/** Removes photo files nothing in `state` refers to. A failed removal leaves a stray file, never a lost reference. */
+async function removeFiles(storage: Storage, uris: Iterable<string>, state: FileState): Promise<void> {
+  if (!storage.fs.rm) return;
+  const kept = photoUris(state);
+  for (const uri of new Set(uris)) {
+    if (kept.has(uri) || !uri.startsWith(`${PHOTOS_DIR}/`)) continue;
+    try {
+      await storage.fs.rm(uri);
+    } catch {
+      // the file is already gone, or stays as a stray the next sweep removes
+    }
+  }
+}
+
+const swept = new WeakSet<object>();
+
+/** Once per app run, before anything is copied in: files in the photos folder no record refers to (left by an abandoned draft) go. */
+async function sweepStrays(storage: Storage, state: FileState): Promise<void> {
+  if (swept.has(storage.fs)) return;
+  swept.add(storage.fs);
+  if (!storage.fs.readdir) return;
+  let names: string[];
+  try {
+    names = await storage.fs.readdir(PHOTOS_DIR);
+  } catch {
+    return;
+  }
+  await removeFiles(storage, names.map((n) => `${PHOTOS_DIR}/${n}`), state);
+}
+
 /** Writes the state and reads the file back; anything but the same state is an error. */
 async function write(storage: Storage, state: FileState): Promise<void> {
   const text = JSON.stringify(state);
@@ -250,9 +294,13 @@ async function write(storage: Storage, state: FileState): Promise<void> {
 /** The state; a missing file (and only that) is seeded once with the two examples. */
 async function ready(storage: Storage): Promise<FileState> {
   const state = await read(storage);
-  if (state.bootstrapped) return state;
+  if (state.bootstrapped) {
+    await sweepStrays(storage, state);
+    return state;
+  }
   const next: FileState = { bootstrapped: true, experiments: seedExperiments.map(clone) };
   await write(storage, next);
+  await sweepStrays(storage, next);
   return next;
 }
 
@@ -284,7 +332,7 @@ export function getExperimentById(id: string, storage: Storage): Promise<Experim
 export function createExperiment(
   fields: ExperimentFields,
   storage: Storage,
-  options: { id: string; now: string },
+  options: { id: string; now: string; photoAssets?: ExperimentPhotoAsset[] },
 ): Promise<ExperimentRecord> {
   return serial(async () => {
     const state = await ready(storage);
@@ -293,7 +341,7 @@ export function createExperiment(
       id: options.id,
       ...fromFields(fields),
       resultEntries: [],
-      photoAssets: [],
+      photoAssets: options.photoAssets ?? [],
       status: 'active',
       createdAt: options.now,
       updatedAt: options.now,
@@ -340,7 +388,10 @@ export function updateExperimentStatus(
 export function deleteExperiment(id: string, storage: Storage): Promise<void> {
   return serial(async () => {
     const state = await ready(storage);
-    await write(storage, { ...state, experiments: state.experiments.filter((e) => e.id !== id) });
+    const gone = state.experiments.find((e) => e.id === id);
+    const next = { ...state, experiments: state.experiments.filter((e) => e.id !== id) };
+    await write(storage, next);
+    if (gone) await removeFiles(storage, photoUris({ ...state, experiments: [gone] }), next);
   });
 }
 
@@ -349,7 +400,12 @@ export function deleteExperiment(id: string, storage: Storage): Promise<void> {
  * first, so it also replaces a damaged file: the one deliberate way out.
  */
 export function resetExperiments(storage: Storage): Promise<void> {
-  return serial(() => write(storage, { bootstrapped: true, experiments: [] }));
+  return serial(async () => {
+    const empty: FileState = { bootstrapped: true, experiments: [] };
+    await write(storage, empty);
+    swept.delete(storage.fs);
+    await sweepStrays(storage, empty);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -365,28 +421,34 @@ const withResults = (
   storage: Storage,
   now: string,
   change: (existing: ExperimentRecord) => ExperimentResultEntry[],
+  after?: (before: ExperimentRecord, record: ExperimentRecord, next: FileState) => Promise<void>,
 ): Promise<ExperimentRecord | null> =>
   serial(async () => {
     const state = await ready(storage);
     const existing = state.experiments.find((e) => e.id === id);
     if (!existing) return null;
     const record: ExperimentRecord = { ...existing, resultEntries: change(existing), updatedAt: now };
-    await write(storage, { ...state, experiments: state.experiments.map((e) => (e.id === id ? record : e)) });
+    const next = { ...state, experiments: state.experiments.map((e) => (e.id === id ? record : e)) };
+    await write(storage, next);
+    if (after) await after(existing, record, next);
     return clone(record);
   });
 
 /** Puts a new entry first. Null: no such record. */
 export function addResultEntry(
   experimentId: string,
-  entry: { id: string; recordedAt: string; notes: string },
+  entry: { id: string; recordedAt: string; notes: string; photoAssets?: ExperimentPhotoAsset[] },
   storage: Storage,
   options: { now: string },
 ): Promise<ExperimentRecord | null> {
   const notes = entry.notes.trim();
-  if (notes === '') return Promise.reject(new ResultError('Write some result notes before saving.'));
+  const photoAssets = entry.photoAssets ?? [];
+  if (notes === '' && photoAssets.length === 0) {
+    return Promise.reject(new ResultError('Write some result notes or add a photo before saving.'));
+  }
   return withResults(experimentId, storage, options.now, (existing) => {
     if (existing.resultEntries.some((r) => r.id === entry.id)) throw new ResultError('A result with this id exists.');
-    return [{ id: entry.id, recordedAt: entry.recordedAt, notes, photoAssets: [] }, ...existing.resultEntries];
+    return [{ id: entry.id, recordedAt: entry.recordedAt, notes, photoAssets }, ...existing.resultEntries];
   });
 }
 
@@ -414,8 +476,110 @@ export function deleteResultEntry(
   storage: Storage,
   options: { now: string },
 ): Promise<ExperimentRecord | null> {
-  return withResults(experimentId, storage, options.now, (existing) => {
-    if (!existing.resultEntries.some((r) => r.id === resultId)) throw new ResultError('This result no longer exists.');
-    return existing.resultEntries.filter((r) => r.id !== resultId);
+  return withResults(
+    experimentId,
+    storage,
+    options.now,
+    (existing) => {
+      if (!existing.resultEntries.some((r) => r.id === resultId)) throw new ResultError('This result no longer exists.');
+      return existing.resultEntries.filter((r) => r.id !== resultId);
+    },
+    (before, _record, next) =>
+      removeFiles(storage, before.resultEntries.filter((r) => r.id === resultId).flatMap((r) => r.photoAssets.map((p) => p.uri)), next),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Photos. The files are copied into app:/data/photos by the caller's `produce`, inside the same turn
+// of the queue as the metadata write, so the copy and the record change are never interleaved with
+// another write. If the record cannot be written, the copies are removed again; a file is removed
+// when its last reference goes, never while any experiment or result still names it.
+// ---------------------------------------------------------------------------
+
+export class PhotoRefused extends Error {}
+
+type PhotoTarget = { experimentId: string; resultId: string }; // resultId '' = the experiment's own photos
+
+const mapPhotos = (
+  existing: ExperimentRecord,
+  target: PhotoTarget,
+  change: (photos: ExperimentPhotoAsset[], entry: ExperimentResultEntry | null) => ExperimentPhotoAsset[],
+): Pick<ExperimentRecord, 'photoAssets' | 'resultEntries'> => {
+  if (target.resultId === '') return { photoAssets: change(existing.photoAssets, null), resultEntries: existing.resultEntries };
+  const entry = existing.resultEntries.find((r) => r.id === target.resultId);
+  if (!entry) throw new ResultError('This result no longer exists.');
+  return {
+    photoAssets: existing.photoAssets,
+    resultEntries: existing.resultEntries.map((r) => (r.id === target.resultId ? { ...r, photoAssets: change(r.photoAssets, r) } : r)),
+  };
+};
+
+/** Copies photos in (via `produce`) and attaches them to the record or one of its results. Null: no such record. */
+export function attachPhotos(
+  target: PhotoTarget,
+  produce: () => Promise<ExperimentPhotoAsset[]>,
+  storage: Storage,
+  options: { now: string },
+): Promise<ExperimentRecord | null> {
+  return serial(async () => {
+    const state = await ready(storage);
+    const existing = state.experiments.find((e) => e.id === target.experimentId);
+    if (!existing) return null;
+    if (target.resultId !== '' && !existing.resultEntries.some((r) => r.id === target.resultId)) {
+      throw new ResultError('This result no longer exists.');
+    }
+    const added = await produce();
+    try {
+      const seen = new Set<string>();
+      const parts = mapPhotos(existing, target, (photos) =>
+        [...photos, ...added].filter((p) => (seen.has(p.id) ? false : (seen.add(p.id), true))),
+      );
+      const record: ExperimentRecord = { ...existing, ...parts, updatedAt: options.now };
+      await write(storage, { ...state, experiments: state.experiments.map((e) => (e.id === record.id ? record : e)) });
+      return clone(record);
+    } catch (e) {
+      await removeFiles(storage, added.map((p) => p.uri), state);
+      throw e;
+    }
   });
+}
+
+/** Detaches one photo; its file goes only when nothing else refers to it. Null: no such record. */
+export function removePhoto(
+  target: PhotoTarget,
+  photoId: string,
+  storage: Storage,
+  options: { now: string },
+): Promise<ExperimentRecord | null> {
+  return serial(async () => {
+    const state = await ready(storage);
+    const existing = state.experiments.find((e) => e.id === target.experimentId);
+    if (!existing) return null;
+    let removed: ExperimentPhotoAsset | undefined;
+    const parts = mapPhotos(existing, target, (photos, entry) => {
+      removed = photos.find((p) => p.id === photoId);
+      if (!removed) throw new PhotoRefused('This photo is already gone.');
+      const rest = photos.filter((p) => p.id !== photoId);
+      if (entry && rest.length === 0 && entry.notes.trim() === '') throw new PhotoRefused('A result needs notes or photos.');
+      return rest;
+    });
+    const record: ExperimentRecord = { ...existing, ...parts, updatedAt: options.now };
+    const next = { ...state, experiments: state.experiments.map((e) => (e.id === record.id ? record : e)) };
+    await write(storage, next);
+    if (removed) await removeFiles(storage, [removed.uri], next);
+    return clone(record);
+  });
+}
+
+/** Copies photos in for a form not yet saved (New, or a result draft); nothing refers to them until it is. */
+export function stagePhotos(produce: () => Promise<ExperimentPhotoAsset[]>, storage: Storage): Promise<ExperimentPhotoAsset[]> {
+  return serial(async () => {
+    await ready(storage);
+    return produce();
+  });
+}
+
+/** Drops a staged photo's file, unless a record has meanwhile taken it. */
+export function discardStagedPhoto(uri: string, storage: Storage): Promise<void> {
+  return serial(async () => removeFiles(storage, [uri], await ready(storage)));
 }

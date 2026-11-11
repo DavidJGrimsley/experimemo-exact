@@ -7,11 +7,27 @@ font "Yellowtail" = "assets/fonts/Yellowtail-Regular.ttf"
 shape Viewport
   width: number
 
+// A stored photo: its durable file under app:/data/photos and what the picker reported.
+shape Photo
+  id: string
+  uri: string
+  name: string
+  mime: string
+  width: number
+  height: number
+
+shape PhotoReply
+  ok: bool
+  id: string
+  error: string
+  photos: Photo[]
+
 shape ResultItem
   id: string
   stamp: string
   notes: string
   photos: number
+  photoItems: Photo[]
 
 // One unsaved edit of one result's notes; each result has its own, so edits to several never overwrite each other.
 shape ResultDraft
@@ -39,6 +55,7 @@ shape Experiment
   observations: string
   results: string
   entryCount: string
+  photoList: Photo[]
   entries: ResultItem[]
   plannedLabel: string
   conclusionLabel: string
@@ -71,6 +88,10 @@ component ExperimemoExact
   mutation saved as shape Reply refreshes experiments
   mutation statusSaved as shape Reply refreshes experiments
   mutation removed as shape Reply refreshes experiments
+  mutation staged as shape PhotoReply then afterStage
+  mutation attached as shape PhotoReply refreshes experiments then afterAttach
+  mutation detached as shape PhotoReply refreshes experiments then afterDetach
+  mutation discarded as shape PhotoReply
   mutation resultAdded as shape Reply refreshes experiments then afterResultAdd
   mutation resultEdited as shape Reply refreshes experiments then afterResultEdit
   mutation resultRemoved as shape Reply refreshes experiments
@@ -96,6 +117,19 @@ component ExperimemoExact
   state sentResultId = ""
   state sentResultNotes = ""
   state draftFor = ""
+  state pickScope = ""
+  state pickExp = ""
+  state pickResult = ""
+  state photoMade = 0
+  state newPhotos: Photo[] = []
+  state draftPhotos: Photo[] = []
+  state photoNote = ""
+  state photoNoteKey = ""
+  derive stagedPhotos = match staged { case some(r) => r.photos, case none => [] }
+  derive stagedError = match staged { case some(r) => r.error, case none => "" }
+  derive attachedError = match attached { case some(r) => r.error, case none => "" }
+  derive detachedError = match detached { case some(r) => r.error, case none => "" }
+  derive photoBusy = pending(staged) or pending(attached) or pending(detached)
   state draftNotes = ""
   state resultMade = 0
   state aimedTitle = ""
@@ -191,14 +225,15 @@ component ExperimemoExact
     draftFor = id
     draftNotes = v
   action addResult(id: string)
-    if draftFor == id and draftNotes.trim() != "" and not pending(resultAdded) and not pending(time)
+    if draftFor == id and (draftNotes.trim() != "" or draftPhotos.length > 0) and not pending(resultAdded) and not pending(time)
       let at = time.epochAtZero + performanceNow()
-      send resultAdded = addResultRecord(id, `result-${at}-${resultMade}`, at, draftNotes)
+      send resultAdded = addResultRecord(id, `result-${at}-${resultMade}`, at, draftNotes, draftPhotos)
       resultMade = resultMade + 1
   // The draft is cleared only when the reply says the entry is stored.
   action afterResultAdd
     if addError == "" and not failed(resultAdded)
       draftNotes = ""
+      draftPhotos = []
   // An edit replaces that result's draft only; the timer restarts, and a failed draft waits for Retry.
   action editResultDraft(expId: string, id: string, notes: string)
     resultDrafts = resultDrafts.filter(d => d.id != id).concat([ResultDraft(expId=expId, id=id, notes=notes, failed=false, error="")])
@@ -232,6 +267,63 @@ component ExperimemoExact
       resultDrafts = resultDrafts.filter(d => d.id != aimedResultId)
       let at = time.epochAtZero + performanceNow()
       send resultRemoved = removeResultRecord(aimedResultExp, aimedResultId, at)
+  // Photos: one hidden file input for the whole app; askPhotos says where the chosen files go.
+  // New and a result draft keep theirs staged (copied, referenced by nothing) until Save; an
+  // experiment or result already stored takes them at once.
+  action askPhotos(scope: string, expId: string, resultId: string)
+    pickScope = scope
+    pickExp = expId
+    pickResult = resultId
+    photoNote = ""
+    photoNoteKey = scope == "new" ? "new" : (scope == "draft" ? `draft-${expId}` : (scope == "result" ? `result-${resultId}` : `exp-${expId}`))
+    if scope == "draft"
+      draftFor = expId
+    showPicker("photo-picker")
+  action photosCancelled
+    photoNote = "Photo selection cancelled. Nothing was changed."
+  action photosPicked(files: Picked[])
+    if files.length == 0
+      photoNote = "Photo selection cancelled. Nothing was changed."
+    else if not photoBusy and not pending(time)
+      let at = time.epochAtZero + performanceNow()
+      let n = photoMade + 1
+      photoMade = n
+      if pickScope == "new" or pickScope == "draft"
+        send staged = stagePhotoFiles(`photo-${at}-${n}`, at, files)
+      else
+        send attached = attachPhotoRecord(pickExp, pickResult, `photo-${at}-${n}`, at, files)
+    else
+      photoNote = "Another photo change is still saving. Try again in a moment."
+  action afterStage
+    if stagedError == "" and not failed(staged)
+      if pickScope == "new"
+        newPhotos = newPhotos.concat(stagedPhotos)
+      else
+        draftPhotos = draftPhotos.concat(stagedPhotos)
+    else
+      photoNote = (stagedError == "" ? "Could not add the photos." : stagedError)
+  action afterAttach
+    if attachedError != "" or failed(attached)
+      photoNote = (attachedError == "" ? "Could not add the photos." : attachedError)
+  action afterDetach
+    if detachedError != "" or failed(detached)
+      photoNote = (detachedError == "" ? "Could not remove the photo." : detachedError)
+  action removePhotoFrom(scope: string, expId: string, resultId: string, photoId: string, uri: string)
+    photoNote = ""
+    photoNoteKey = scope == "new" ? "new" : (scope == "draft" ? `draft-${expId}` : (scope == "result" ? `result-${resultId}` : `exp-${expId}`))
+    if scope == "new"
+      newPhotos = newPhotos.filter(p => p.id != photoId)
+      send discarded = discardPhotoFile(uri)
+    else if scope == "draft"
+      draftPhotos = draftPhotos.filter(p => p.id != photoId)
+      send discarded = discardPhotoFile(uri)
+    else if not photoBusy and not pending(time)
+      let at = time.epochAtZero + performanceNow()
+      send detached = removePhotoRecord(expId, resultId, photoId, at)
+    else
+      photoNote = "Another photo change is still saving. Try again in a moment."
+  action removeNewPhoto(photoId: string, uri: string)
+    removePhotoFrom("new", "", "", photoId, uri)
   action pickTrack
     nav = select(nav, "track")
   action pickNew
@@ -278,7 +370,7 @@ component ExperimemoExact
     createError = ""
     if title.trim() != "" and hypothesis.trim() != "" and procedure.trim() != "" and not pending(created) and not pending(time)
       let at = time.epochAtZero + performanceNow()
-      send created = createExperimentRecord(`experiment-${at}-${made}`, at, title, category, hypothesis, procedure, dataPlan, observations, fieldNotes, conclusion, plannedNum)
+      send created = createExperimentRecord(`experiment-${at}-${made}`, at, title, category, hypothesis, procedure, dataPlan, observations, fieldNotes, conclusion, plannedNum, newPhotos)
       made = made + 1
   // Clear the form and open Track only when the reply says the record is stored; a refusal keeps every field.
   action afterCreate
@@ -293,6 +385,7 @@ component ExperimemoExact
       fieldNotes = ""
       conclusion = ""
       planned = "0"
+      newPhotos = []
       nav = select(nav, "track")
   action changeStatus(id: string, status: string)
     let at = time.epochAtZero + performanceNow()
@@ -431,7 +524,7 @@ component ExperimemoExact
                         text "Back to Track"
                   else
                     for x in experiments.filter(r => r.id == e.params.id) key=x.id
-                      ExperimentEditor(route=e.id, x=x, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, draft=(draftFor == x.id ? draftNotes : ""), editDraft=editDraft, addResult=addResult, adding=pending(resultAdded), addError=addError, editResult=editResultDraft, retryResult=retryResult, resultDrafts=resultDrafts, askDeleteResult=askDeleteResult, removeResultError=removeResultError, resultBusy=pending(resultEdited) or pending(resultRemoved), hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
+                      ExperimentEditor(route=e.id, x=x, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, draft=(draftFor == x.id ? draftNotes : ""), editDraft=editDraft, addResult=addResult, adding=pending(resultAdded), addError=addError, editResult=editResultDraft, retryResult=retryResult, resultDrafts=resultDrafts, askDeleteResult=askDeleteResult, removeResultError=removeResultError, resultBusy=pending(resultEdited) or pending(resultRemoved), draftPhotos=(draftFor == x.id ? draftPhotos : []), askPhotos=askPhotos, removePhoto=removePhotoFrom, photoNote=photoNote, photoNoteKey=photoNoteKey, photoBusy=photoBusy, hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
                 else if e.name == "track"
                   scroll id=`content-${e.id}` flex=1 min-height=0
                     column padding=20 gap=20 width="100%" box-sizing="border-box"
@@ -518,7 +611,12 @@ component ExperimemoExact
                       column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
                         text "Photos" font-size="1.0625rem" font-weight=800
                         text "Add photos now or attach them later from the experiment record." font-size="0.875rem" line-height="1.25rem"
-                        text "Photo capture is not available in this visual build." font-size="0.8125rem" font-weight=700 testId="photos-note"
+                        button press=askPhotos("new", "", "") disabled=photoBusy testId="new-add-photos" aria-label="Add photos" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+                          text "Add photos" font-weight=800 font-size="0.875rem"
+                        text "Taking a photo with the camera is not available in this build; choose photos you already have." font-size="0.8125rem" font-weight=700 testId="photos-note"
+                        PhotoGrid(photos=newPhotos, prefix="new", remove=removeNewPhoto, busy=false)
+                        if photoNoteKey == "new" and photoNote != ""
+                          text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="new-photo-note" role="alert"
                       column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
                         text "Save and continue later" font-size="1.0625rem" font-weight=800
                         text "Your experiment appears in Track right away so you can keep building it out whenever you need to." font-size="0.875rem" line-height="1.25rem"
@@ -526,6 +624,7 @@ component ExperimemoExact
                           text (pending(created) ? "Saving..." : "Save experiment")
                         if createError != ""
                           text createError color="warning" font-size="0.8125rem" font-weight=700 testId="create-error" role="alert"
+      input type="file" accept="image/*" multiple=true id="photo-picker" testId="photo-picker" display="none" change=photosPicked cancel=photosCancelled
       row role="tablist" appearance="none" display=(wide ? "none" : "flex")
         button role="tab" aria-controls="panel-new" aria-selected=(nav.tab == "new") press=pick("new") testId="tab-new" flex=1
           image "symbol:add"
@@ -614,6 +713,12 @@ component ExperimentEditor
     askDeleteResult: action
     removeResultError: string
     resultBusy: bool
+    draftPhotos: Photo[]
+    askPhotos: action
+    removePhoto: action
+    photoNote: string
+    photoNoteKey: string
+    photoBusy: bool
     hasPending: bool
     saving: bool
     statusBusy: bool
@@ -658,6 +763,18 @@ component ExperimentEditor
   action editConclusion(v: string)
     conclusion = v
     touch(x.id, title, category, hypothesis, procedure, dataPlan, observations, notes, v, plannedNum)
+  action addDraftPhotos
+    askPhotos("draft", x.id, "")
+  action dropDraftPhoto(photoId: string, uri: string)
+    removePhoto("draft", x.id, "", photoId, uri)
+  action addExpPhotos
+    askPhotos("experiment", x.id, "")
+  action dropExpPhoto(photoId: string, uri: string)
+    removePhoto("experiment", x.id, "", photoId, uri)
+  action addResultPhotos(resultId: string)
+    askPhotos("result", x.id, resultId)
+  action dropResultPhoto(resultId: string, photoId: string, uri: string)
+    removePhoto("result", x.id, resultId, photoId, uri)
   action typeDraft(v: string)
     editDraft(x.id, v)
   action editPlanned(v: string)
@@ -716,18 +833,32 @@ component ExperimentEditor
             column gap=8
               text "New result" font-size="0.9375rem" font-weight=800
               textarea value=draft input=typeDraft aria-label="New result" testId="result-draft" rows=4 placeholder="Add result details." background-color="surface.page" border-radius=14 padding="12px 14px" height=112
-              button press=addResult(x.id) disabled=(adding or draft.trim() == "") testId="result-add" aria-label="Save result" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem" align-self="flex-start" padding="0.5rem 1rem"
+              button press=addResult(x.id) disabled=(adding or (draft.trim() == "" and draftPhotos.length == 0)) testId="result-add" aria-label="Save result" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem" align-self="flex-start" padding="0.5rem 1rem"
                 text (adding ? "Saving..." : "Save result")
               if addError != ""
                 text addError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="result-add-error" role="alert"
-              text "Result photos are not available in this build yet; photos already on an entry are kept." font-size="0.8125rem" line-height="1.25rem" testId="result-photos-note"
+              button press=addDraftPhotos disabled=photoBusy testId="draft-add-photos" aria-label="Add photos to the new result" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+                text "Add photos" font-weight=800 font-size="0.875rem"
+              PhotoGrid(photos=draftPhotos, prefix="draft", remove=dropDraftPhoto, busy=false)
+              if photoNoteKey == `draft-${x.id}` and photoNote != ""
+                text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="draft-photo-note" role="alert"
+              text "Taking a photo with the camera is not available in this build; choose photos you already have." font-size="0.8125rem" line-height="1.25rem" testId="result-photos-note"
             if removeResultError != ""
               text removeResultError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="result-remove-error" role="alert"
             for r in x.entries key=r.id
-              ResultEntry(expId=x.id, r=r, drafts=resultDrafts, edit=editResult, retry=retryResult, askDelete=askDeleteResult, busy=resultBusy)
+              ResultEntry(expId=x.id, r=r, drafts=resultDrafts, edit=editResult, retry=retryResult, askDelete=askDeleteResult, busy=resultBusy, addPhotos=addResultPhotos, dropPhoto=dropResultPhoto, photoBusy=photoBusy, photoNote=(photoNoteKey == `result-${r.id}` ? photoNote : ""))
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="attached-photos"
+            text "Attached photos" font-size="1.0625rem" font-weight=800
+            text "Keep your reference photos with the experiment so everything stays easy to review later." font-size="0.875rem" line-height="1.25rem"
+            button press=addExpPhotos disabled=photoBusy testId="exp-add-photos" aria-label="Add photos to the experiment" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+              text "Add photos" font-weight=800 font-size="0.875rem"
+            text "Taking a photo with the camera is not available in this build; choose photos you already have." font-size="0.8125rem" line-height="1.25rem" testId="exp-photos-note"
+            PhotoGrid(photos=x.photoList, prefix="exp", remove=dropExpPhoto, busy=photoBusy)
+            if photoNoteKey == `exp-${x.id}` and photoNote != ""
+              text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="exp-photo-note" role="alert"
           column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="autosave-card"
             text "Autosave" font-size="1.0625rem" font-weight=800
-            text "Changes save automatically a moment after you stop typing. Result notes save the same way, and a new result is saved when you add it; photos are not editable in this build yet." font-size="0.875rem" line-height="1.25rem"
+            text "Changes save automatically a moment after you stop typing. Result notes save the same way, and a new result is saved when you add it; photos are added and removed on their own, straight away." font-size="0.875rem" line-height="1.25rem"
             if hasPending or saving
               text "Saving…" font-size="0.8125rem" font-weight=700 testId="save-pending" role="status"
             else if invalid
@@ -748,6 +879,10 @@ component ResultEntry
     retry: action
     askDelete: action
     busy: bool
+    addPhotos: action
+    dropPhoto: action
+    photoBusy: bool
+    photoNote: string
   derive mine = drafts.filter(d => d.id == r.id)
   derive waiting = mine.length > 0
   derive text = match first(mine) { case some(d) => d.notes, case none => r.notes }
@@ -757,6 +892,10 @@ component ResultEntry
     edit(expId, r.id, v)
   action again
     retry(r.id)
+  action add
+    addPhotos(r.id)
+  action drop(photoId: string, uri: string)
+    dropPhoto(r.id, photoId, uri)
   view
     column background-color="surface.page" border-radius=12 padding=12 gap=8 testId=`result-${r.id}`
       row gap=8 flex-wrap="wrap" align-items="center" justify-content="space-between"
@@ -764,8 +903,13 @@ component ResultEntry
         button press=askDelete(expId, r.id) disabled=busy aria-label=`Delete result from ${r.stamp}` testId=`result-delete-${r.id}` background-color="danger" color="ink.on-danger" border-radius=999 min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0
           image "symbol:close"
       textarea value=text input=type aria-label=`Result notes, ${r.stamp}` testId=`result-notes-${r.id}` rows=3 placeholder="Add result details." background-color="surface.card" border-radius=14 padding="12px 14px" height=96
+      PhotoGrid(photos=r.photoItems, prefix=`result-${r.id}`, remove=drop, busy=photoBusy)
       if r.photos > 0
         text `${r.photos} ${r.photos == 1 ? "photo" : "photos"} attached` font-size="0.8125rem" testId=`result-photos-${r.id}`
+      button press=add disabled=photoBusy testId=`result-add-photos-${r.id}` aria-label="Add photos to this result" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+        text "Add photos" font-weight=800 font-size="0.875rem"
+      if photoNote != ""
+        text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId=`result-photo-note-${r.id}` role="alert"
       if failed
         text `Not saved: ${error}` color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId=`result-error-${r.id}` role="alert"
         button press=again testId=`result-retry-${r.id}` border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
@@ -788,3 +932,17 @@ component TopTabs
           text "New"
         button role="tab" aria-selected=(current == "track") press=goTrack testId="tab-track" min-height="2.5rem" padding="0 1rem" border-radius=999 border=(current == "track" ? "1px solid var(--ink)" : "1px solid transparent") background-color=(current == "track" ? "surface.page" : "transparent") color=(current == "track" ? "brand" : "ink") font-weight=800 font-size="0.9375rem"
           text "Track"
+
+component PhotoGrid
+  props
+    photos: Photo[]
+    prefix: string
+    remove: action
+    busy: bool
+  view
+    if photos.length > 0
+      row gap=10 flex-wrap="wrap" testId=`photos-${prefix}`
+        for p in photos key=p.id
+          button press=remove(p.id, p.uri) disabled=busy aria-label=`Remove photo ${p.name}` testId=`photo-${p.id}` display="flex" flex-direction="column" align-items="center" gap=6 background-color="transparent" border-radius=12
+            image p.uri width=84 height=84 object-fit="cover" border-radius=12 border="1px solid var(--brand)" aria-label=`Photo ${p.name}`
+            text "Remove" font-size="0.75rem" font-weight=700

@@ -726,3 +726,145 @@ test "a wide window draws the reference's top tabs on New and Track and switches
   tap "tab-new"
   clock settle
   expect tree has "field-title"
+
+test "an experiment photo is picked, previewed, kept after a reload, and removed for good"
+  at "/experiment/experiment-seed-2"
+  clock data
+  tap "exp-add-photos"
+  pick "photo-picker" "fixtures/sample.png"
+  clock data
+  clock settle
+  expect tree has "photo-photo-1767225600000-1-0"
+  expect tree missing "exp-photo-note"
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-2"
+  clock settle
+  expect tree has "photo-photo-1767225600000-1-0"
+  tap "photo-photo-1767225600000-1-0"
+  clock data
+  clock settle
+  expect tree missing "photo-photo-1767225600000-1-0"
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-2"
+  clock settle
+  expect tree missing "photo-photo-1767225600000-1-0"
+
+test "photos on an experiment, a result and a result draft stay separate"
+  at "/experiment/experiment-seed-1"
+  clock data
+  tap "exp-add-photos"
+  pick "photo-picker" "fixtures/sample.png"
+  clock data
+  tap "result-add-photos-result-seed-1"
+  pick "photo-picker" "fixtures/sample.png"
+  clock data
+  expect tree has "photo-photo-1767225600000-1-0"
+  expect text "result-photos-result-seed-1" == "1 photo attached"
+  tap "photo-photo-1767225600000-1-0"
+  clock data
+  clock settle
+  expect tree missing "photo-photo-1767225600000-1-0"
+  expect text "result-photos-result-seed-1" == "1 photo attached"
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "result-photos-result-seed-1" == "1 photo attached"
+  expect tree missing "photo-photo-1767225600000-1-0"
+
+test "a photo only result is saved from the draft and its last photo cannot be removed"
+  at "/experiment/experiment-seed-2"
+  clock data
+  tap "draft-add-photos"
+  pick "photo-picker" "fixtures/sample.png"
+  clock data
+  clock settle
+  expect tree has "photo-photo-1767225600000-1-0"
+  expect enabled "result-add"
+  tap "result-add"
+  clock data
+  clock settle
+  expect text "result-count" == "1 timestamped entry"
+  expect tree missing "photos-draft"
+  tap "photo-photo-1767225600000-1-0"
+  clock data
+  clock settle
+  expect tree has "photo-photo-1767225600000-1-0"
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-2"
+  clock settle
+  expect text "result-count" == "1 timestamped entry"
+  expect tree has "photo-photo-1767225600000-1-0"
+
+test "cancelling the picker says so and changes nothing"
+  at "/experiment/experiment-seed-2"
+  clock data
+  tap "exp-add-photos"
+  pick "photo-picker" cancel
+  clock data
+  expect text "exp-photo-note" == "Photo selection cancelled. Nothing was changed."
+  expect tree missing "photos-exp"
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-2"
+  clock settle
+  expect tree missing "photos-exp"
+
+test "New keeps picked photos with the saved record, and a removed one is not saved"
+  tap "new-add-photos"
+  pick "photo-picker" "fixtures/sample.png"
+  clock data
+  clock settle
+  expect tree has "photos-new"
+  tap "new-add-photos"
+  pick "photo-picker" "fixtures/sample.png"
+  clock data
+  clock settle
+  tap "photo-photo-1767225600000-1-0"
+  clock data
+  clock settle
+  type "field-title" "With photo"
+  type "field-hypothesis" "A hypothesis"
+  type "field-procedure" "Steps"
+  tap "save"
+  clock data
+  clock settle
+  expect tree missing "photos-new"
+  tap "With photo"
+  clock settle
+  expect tree has "photos-exp"
+  expect tree missing "photo-photo-1767225600000-1-0"
+  reload
+  tap "tab-track"
+  clock data
+  tap "With photo"
+  clock settle
+  expect tree has "photos-exp"
+
+test "a photo change leaves the other fields and a waiting autosave alone"
+  at "/experiment/experiment-seed-2"
+  clock data
+  type "edit-observations" "Typed before the photo."
+  tap "exp-add-photos"
+  pick "photo-picker" "fixtures/sample.png"
+  clock +700
+  clock data
+  clock +700
+  clock data
+  expect tree has "photos-exp"
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-2"
+  clock settle
+  expect text "edit-observations" == "Typed before the photo."
+  expect tree has "photos-exp"
+  expect text "edit-category" == "Physics"
