@@ -5,7 +5,10 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 
 import {
   EXPERIMENT_FS_PATH,
+  addResultEntry,
   createExperiment,
+  deleteResultEntry,
+  updateResultNotes,
   deleteExperiment,
   getExperimentById,
   listExperiments,
@@ -210,5 +213,79 @@ describe('failures are errors, never silent', () => {
   test('an unreadable file is an error, not an empty list', async () => {
     fs.files.set(EXPERIMENT_FS_PATH, new TextEncoder().encode('{not json'));
     await expect(listExperiments(fs)).rejects.toThrow();
+  });
+});
+
+describe('result entries', () => {
+  const at = '2026-07-01T10:00:00.000Z';
+  const stored = async () => (await listExperiments(fs)).find((r) => r.id === 'experiment-seed-1')!;
+
+  test('add puts the entry first, keeps photos, fields and older entries, and persists', async () => {
+    const before = await stored();
+    await addResultEntry('experiment-seed-1', { id: 'r2', recordedAt: at, notes: ' New ' }, fs, { now: at });
+    const after = await stored();
+    expect(after.resultEntries.map((r) => r.id)).toEqual(['r2', 'result-seed-1']);
+    expect(after.resultEntries[0]).toEqual({ id: 'r2', recordedAt: at, notes: 'New', photoAssets: [] });
+    expect(after.title).toBe(before.title);
+    expect(after.photoAssets).toEqual(before.photoAssets);
+    expect(after.updatedAt).toBe(at);
+  });
+
+  test('a blank add is refused and writes nothing', async () => {
+    await listExperiments(fs);
+    const writes = fs.writes;
+    await expect(addResultEntry('experiment-seed-1', { id: 'r2', recordedAt: at, notes: '  ' }, fs, { now: at })).rejects.toThrow();
+    expect(fs.writes).toBe(writes);
+  });
+
+  test('edit changes only that entry notes and keeps its photos and timestamp', async () => {
+    const photo = { id: 'p', uri: 'u', fileName: null, mimeType: null, width: 1, height: 1 };
+    await addResultEntry('experiment-seed-1', { id: 'r2', recordedAt: at, notes: 'a' }, fs, { now: at });
+    const raw = JSON.parse(new TextDecoder().decode(fs.files.get(EXPERIMENT_FS_PATH)!));
+    raw.experiments.find((e: any) => e.id === 'experiment-seed-1').resultEntries[0].photoAssets = [photo];
+    fs.files.set(EXPERIMENT_FS_PATH, new TextEncoder().encode(JSON.stringify(raw)));
+    await updateResultNotes('experiment-seed-1', 'r2', '', fs, { now: at }).then(
+      () => { throw new Error('should refuse'); },
+      () => undefined,
+    ).catch(() => undefined);
+    await updateResultNotes('experiment-seed-1', 'r2', 'b', fs, { now: at });
+    const e = (await stored()).resultEntries;
+    expect(e[0]).toEqual({ id: 'r2', recordedAt: at, notes: 'b', photoAssets: [photo] });
+    expect(e[1].id).toBe('result-seed-1');
+    // photo-only result may be blanked
+    await updateResultNotes('experiment-seed-1', 'r2', '', fs, { now: at });
+    expect((await stored()).resultEntries[0].notes).toBe('');
+  });
+
+  test('editing or deleting a missing result throws, a missing record returns null', async () => {
+    await expect(updateResultNotes('experiment-seed-1', 'zz', 'x', fs, { now: at })).rejects.toThrow();
+    await expect(deleteResultEntry('experiment-seed-1', 'zz', fs, { now: at })).rejects.toThrow();
+    expect(await deleteResultEntry('nope', 'zz', fs, { now: at })).toBeNull();
+  });
+
+  test('delete removes only that entry', async () => {
+    await deleteResultEntry('experiment-seed-1', 'result-seed-1', fs, { now: at });
+    expect((await stored()).resultEntries).toEqual([]);
+    expect((await listExperiments(fs)).length).toBe(2);
+  });
+
+  test('overlapping result writes and a field update all land', async () => {
+    await Promise.all([
+      addResultEntry('experiment-seed-1', { id: 'a', recordedAt: at, notes: 'a' }, fs, { now: at }),
+      addResultEntry('experiment-seed-1', { id: 'b', recordedAt: at, notes: 'b' }, fs, { now: at }),
+      updateExperiment('experiment-seed-1', fields({ title: 'Renamed' }), fs, { now: at }),
+    ]);
+    const r = await stored();
+    expect(r.resultEntries.map((x) => x.id).sort()).toEqual(['a', 'b', 'result-seed-1']);
+    expect(r.title).toBe('Renamed');
+  });
+
+  test('a failed or dropped write is an error, not a success', async () => {
+    await listExperiments(fs);
+    fs.failWrites = true;
+    await expect(addResultEntry('experiment-seed-1', { id: 'x', recordedAt: at, notes: 'x' }, fs, { now: at })).rejects.toThrow();
+    fs.failWrites = false;
+    fs.dropWrites = true;
+    await expect(deleteResultEntry('experiment-seed-1', 'result-seed-1', fs, { now: at })).rejects.toThrow();
   });
 });

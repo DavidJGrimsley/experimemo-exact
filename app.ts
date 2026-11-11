@@ -1,11 +1,15 @@
 import type { Answer, Result, Sources, Storage } from './app.contract.d.ts';
 import {
+  addResultEntry,
   createExperiment,
+  deleteResultEntry,
+  updateResultNotes,
   deleteExperiment,
   listExperiments,
   resetExperiments,
   updateExperiment,
   updateExperimentStatus,
+  ResultError,
   type ExperimentFields,
   type ExperimentRecord,
   type Storage as StoreStorage,
@@ -24,6 +28,10 @@ const day = (iso: string) =>
 const stamp = (iso: string) =>
   new Date(iso).toLocaleString('en-US', {
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC',
+  });
+const resultStamp = (iso: string) =>
+  new Date(iso).toLocaleString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC',
   });
 const isoAt = (ms: number) => new Date(ms).toISOString();
 
@@ -48,6 +56,13 @@ function view(r: ExperimentRecord): Result<'experiments'>[number] {
     results: latest
       ? `${r.resultEntries.length} ${r.resultEntries.length === 1 ? 'entry' : 'entries'} - Latest ${stamp(latest.recordedAt)}: ${latest.notes || 'Photos only'}`
       : 'No result entries yet.',
+    entryCount: r.resultEntries.length === 1 ? '1 timestamped entry' : `${r.resultEntries.length} timestamped entries`,
+    entries: r.resultEntries.map((e) => ({
+      id: e.id,
+      stamp: resultStamp(e.recordedAt),
+      notes: e.notes,
+      photos: e.photoAssets.length,
+    })),
     plannedLabel: `Planned photos: ${r.plannedAttachmentCount}`,
     conclusionLabel: `Conclusion: ${r.conclusionNotes ? 'Ready' : 'Open'}`,
   };
@@ -118,6 +133,34 @@ const sources: Sources = {
       return saved ? ok(id) : refused(id, gone);
     } catch (e) {
       return failure(id, e);
+    }
+  },
+
+  addResultRecord: async ([id, resultId, ms, notes], _store, storage): Promise<Result<'addResultRecord'>> => {
+    if (notes.trim() === '') return refused(resultId, 'Write some result notes before saving.');
+    try {
+      const saved = await addResultEntry(id, { id: resultId, recordedAt: isoAt(ms), notes }, files(storage), { now: isoAt(ms) });
+      return saved ? ok(resultId) : refused(resultId, gone);
+    } catch (e) {
+      return e instanceof ResultError ? refused(resultId, e.message) : failure(resultId, e);
+    }
+  },
+
+  editResultRecord: async ([id, resultId, ms, notes], _store, storage): Promise<Result<'editResultRecord'>> => {
+    try {
+      const saved = await updateResultNotes(id, resultId, notes, files(storage), { now: isoAt(ms) });
+      return saved ? ok(resultId) : refused(resultId, gone);
+    } catch (e) {
+      return e instanceof ResultError ? refused(resultId, e.message) : failure(resultId, e);
+    }
+  },
+
+  removeResultRecord: async ([id, resultId, ms], _store, storage): Promise<Result<'removeResultRecord'>> => {
+    try {
+      const saved = await deleteResultEntry(id, resultId, files(storage), { now: isoAt(ms) });
+      return saved ? ok(resultId) : refused(resultId, gone);
+    } catch (e) {
+      return e instanceof ResultError ? refused(resultId, e.message) : failure(resultId, e);
     }
   },
 

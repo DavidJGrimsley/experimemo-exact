@@ -283,3 +283,71 @@ export function deleteExperiment(id: string, storage: Storage): Promise<void> {
 export function resetExperiments(storage: Storage): Promise<void> {
   return serial(() => write(storage, { bootstrapped: true, experiments: [] }));
 }
+
+// ---------------------------------------------------------------------------
+// Result entries. Each runs through the same queue and read-back as every other write, changes
+// only the one entry, and keeps the record's fields, status, photos and the entries' own photos.
+// A result needs notes or photos; recordedAt is set once, when the entry is added.
+// ---------------------------------------------------------------------------
+
+export class ResultError extends Error {}
+
+const withResults = (
+  id: string,
+  storage: Storage,
+  now: string,
+  change: (existing: ExperimentRecord) => ExperimentResultEntry[],
+): Promise<ExperimentRecord | null> =>
+  serial(async () => {
+    const state = await ready(storage);
+    const existing = state.experiments.find((e) => e.id === id);
+    if (!existing) return null;
+    const record: ExperimentRecord = { ...existing, resultEntries: change(existing), updatedAt: now };
+    await write(storage, { ...state, experiments: state.experiments.map((e) => (e.id === id ? record : e)) });
+    return clone(record);
+  });
+
+/** Puts a new entry first. Null: no such record. */
+export function addResultEntry(
+  experimentId: string,
+  entry: { id: string; recordedAt: string; notes: string },
+  storage: Storage,
+  options: { now: string },
+): Promise<ExperimentRecord | null> {
+  const notes = entry.notes.trim();
+  if (notes === '') return Promise.reject(new ResultError('Write some result notes before saving.'));
+  return withResults(experimentId, storage, options.now, (existing) => {
+    if (existing.resultEntries.some((r) => r.id === entry.id)) throw new ResultError('A result with this id exists.');
+    return [{ id: entry.id, recordedAt: entry.recordedAt, notes, photoAssets: [] }, ...existing.resultEntries];
+  });
+}
+
+/** Changes one entry's notes only. Null: no such record. */
+export function updateResultNotes(
+  experimentId: string,
+  resultId: string,
+  notes: string,
+  storage: Storage,
+  options: { now: string },
+): Promise<ExperimentRecord | null> {
+  const text = notes.trim();
+  return withResults(experimentId, storage, options.now, (existing) => {
+    const entry = existing.resultEntries.find((r) => r.id === resultId);
+    if (!entry) throw new ResultError('This result no longer exists.');
+    if (text === '' && entry.photoAssets.length === 0) throw new ResultError('A result needs notes or photos.');
+    return existing.resultEntries.map((r) => (r.id === resultId ? { ...r, notes: text } : r));
+  });
+}
+
+/** Removes one entry. Null: no such record. */
+export function deleteResultEntry(
+  experimentId: string,
+  resultId: string,
+  storage: Storage,
+  options: { now: string },
+): Promise<ExperimentRecord | null> {
+  return withResults(experimentId, storage, options.now, (existing) => {
+    if (!existing.resultEntries.some((r) => r.id === resultId)) throw new ResultError('This result no longer exists.');
+    return existing.resultEntries.filter((r) => r.id !== resultId);
+  });
+}

@@ -4,6 +4,12 @@
 // (the editor autosaves 600 ms after the last edit).
 font "Yellowtail" = "assets/fonts/Yellowtail-Regular.ttf"
 
+shape ResultItem
+  id: string
+  stamp: string
+  notes: string
+  photos: number
+
 shape Experiment
   id: string
   title: string
@@ -21,6 +27,8 @@ shape Experiment
   badge: string
   observations: string
   results: string
+  entryCount: string
+  entries: ResultItem[]
   plannedLabel: string
   conclusionLabel: string
 
@@ -50,6 +58,9 @@ component ExperimemoExact
   mutation saved as shape Reply refreshes experiments
   mutation statusSaved as shape Reply refreshes experiments
   mutation removed as shape Reply refreshes experiments
+  mutation resultAdded as shape Reply refreshes experiments then afterResultAdd
+  mutation resultEdited as shape Reply refreshes experiments
+  mutation resultRemoved as shape Reply refreshes experiments
   mutation resetDone as shape Reply refreshes experiments then afterReset
   // The editor's latest valid draft, waiting out its 600 ms (hasPending), kept until a reply says it is stored.
   state hasPending = false
@@ -65,6 +76,11 @@ component ExperimemoExact
   state pConclusion = ""
   state pPlanned = 0
   state aimedId = ""
+  state aimedResultExp = ""
+  state aimedResultId = ""
+  state draftFor = ""
+  state draftNotes = ""
+  state resultMade = 0
   state aimedTitle = ""
   state made = 0
   state createError = ""
@@ -90,6 +106,10 @@ component ExperimemoExact
   derive savedId = match saved { case some(r) => r.id, case none => "" }
   derive removedError = match removed { case some(r) => r.error, case none => "" }
   derive resetError = match resetDone { case some(r) => r.error, case none => "" }
+  derive addError = match resultAdded { case some(r) => r.error, case none => "" }
+  derive editResultError = match resultEdited { case some(r) => r.error, case none => "" }
+  derive editResultId = match resultEdited { case some(r) => r.id, case none => "" }
+  derive removeResultError = match resultRemoved { case some(r) => r.error, case none => "" }
   derive statusError = match statusSaved { case some(r) => r.error, case none => "" }
   task autosave when hasPending key=autoKey
     after(600, flushAutosave)
@@ -143,6 +163,31 @@ component ExperimemoExact
     hasPending = pTitle.trim() != "" and pHypothesis.trim() != ""
     autoKey = autoKey + 1
     refresh experiments
+  // Result entries are stored at once, one at a time; the timestamp is taken here, never typed.
+  action editDraft(id: string, v: string)
+    draftFor = id
+    draftNotes = v
+  action addResult(id: string)
+    if draftFor == id and draftNotes.trim() != "" and not pending(resultAdded) and not pending(time)
+      let at = time.epochAtZero + performanceNow()
+      send resultAdded = addResultRecord(id, `result-${at}-${resultMade}`, at, draftNotes)
+      resultMade = resultMade + 1
+  // The draft is cleared only when the reply says the entry is stored.
+  action afterResultAdd
+    if addError == "" and not failed(resultAdded)
+      draftNotes = ""
+  action saveResultNotes(id: string, resultId: string, notes: string)
+    if not pending(resultEdited)
+      let at = time.epochAtZero + performanceNow()
+      send resultEdited = editResultRecord(id, resultId, at, notes)
+  action askDeleteResult(id: string, resultId: string)
+    aimedResultExp = id
+    aimedResultId = resultId
+    showModal("result-delete-confirm")
+  action confirmDeleteResult
+    if not pending(resultRemoved)
+      let at = time.epochAtZero + performanceNow()
+      send resultRemoved = removeResultRecord(aimedResultExp, aimedResultId, at)
   action pickNew
     nav = select(nav, "new")
   action pick(name: string)
@@ -340,7 +385,7 @@ component ExperimemoExact
                         text "Back to Track"
                   else
                     for x in experiments.filter(r => r.id == e.params.id) key=x.id
-                      ExperimentEditor(route=e.id, x=x, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
+                      ExperimentEditor(route=e.id, x=x, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, draft=(draftFor == x.id ? draftNotes : ""), editDraft=editDraft, addResult=addResult, adding=pending(resultAdded), addError=addError, saveResultNotes=saveResultNotes, askDeleteResult=askDeleteResult, editResultError=editResultError, editResultId=editResultId, removeResultError=removeResultError, resultBusy=pending(resultEdited) or pending(resultRemoved), hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
                 else if e.name == "track"
                   scroll id=`content-${e.id}` flex=1 min-height=0
                     column padding=20 gap=20 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
@@ -444,6 +489,12 @@ component ExperimemoExact
           text "Delete"
         button commandfor="delete-confirm" command="close" testId="delete-confirm-cancel"
           text "Cancel"
+      dialog id="result-delete-confirm" role="alertdialog" aria-label="Delete result?"
+        text "This will remove the result notes and photos from this record." testId="result-delete-text"
+        button press=confirmDeleteResult destructive=true commandfor="result-delete-confirm" command="close" testId="result-delete-yes"
+          text "Delete"
+        button commandfor="result-delete-confirm" command="close" testId="result-delete-cancel"
+          text "Cancel"
       dialog id="reset-confirm" role="alertdialog" aria-label="Reset app data?"
         text "This will permanently remove every experiment and leave the app empty." testId="reset-confirm-text"
         button press=confirmReset destructive=true commandfor="reset-confirm" command="close" testId="reset-confirm-yes"
@@ -488,7 +539,7 @@ component ExperimentCard
           text "Observations" font-size="0.75rem" font-weight=800 -exact-fit="shrink"
           text x.observations font-size="0.875rem" line-height="1.25rem"
           text "Results" font-size="0.75rem" font-weight=800
-          text x.results font-size="0.875rem" line-height="1.25rem"
+          text x.results font-size="0.875rem" line-height="1.25rem" testId=`results-${x.id}`
         row gap=12 flex-wrap="wrap"
           text x.plannedLabel font-size="0.75rem" font-weight=700
           text x.conclusionLabel font-size="0.75rem" font-weight=700
@@ -502,6 +553,17 @@ component ExperimentEditor
     setStatus: action
     saveError: string
     savedId: string
+    draft: string
+    editDraft: action
+    addResult: action
+    adding: bool
+    addError: string
+    saveResultNotes: action
+    askDeleteResult: action
+    editResultError: string
+    editResultId: string
+    removeResultError: string
+    resultBusy: bool
     hasPending: bool
     saving: bool
     statusBusy: bool
@@ -546,6 +608,8 @@ component ExperimentEditor
   action editConclusion(v: string)
     conclusion = v
     touch(x.id, title, category, hypothesis, procedure, dataPlan, observations, notes, v, plannedNum)
+  action typeDraft(v: string)
+    editDraft(x.id, v)
   action editPlanned(v: string)
     planned = v
     let n = match parseNumber(v) { case some(p) => (p < 0 ? 0 : round(p)), case none => 0 }
@@ -596,9 +660,24 @@ component ExperimentEditor
           column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
             text "Planned photo count" font-size="0.9375rem" font-weight=800
             input value=planned input=editPlanned inputmode="numeric" aria-label="Planned photo count" testId="edit-planned" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="results-card"
+            text "Results" role="heading" aria-level=3 font-size="1.0625rem" font-weight=800
+            text x.entryCount font-size="0.8125rem" font-weight=700 testId="result-count"
+            column gap=8
+              text "New result" font-size="0.9375rem" font-weight=800
+              textarea value=draft input=typeDraft aria-label="New result" testId="result-draft" rows=4 placeholder="Add result details." background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+              button press=addResult(x.id) disabled=(adding or draft.trim() == "") testId="result-add" aria-label="Save result" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem" align-self="flex-start" padding="0.5rem 1rem"
+                text (adding ? "Saving..." : "Save result")
+              if addError != ""
+                text addError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="result-add-error" role="alert"
+              text "Result photos are not available in this build yet; photos already on an entry are kept." font-size="0.8125rem" line-height="1.25rem" testId="result-photos-note"
+            if removeResultError != ""
+              text removeResultError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="result-remove-error" role="alert"
+            for r in x.entries key=r.id
+              ResultEntry(expId=x.id, r=r, save=saveResultNotes, askDelete=askDeleteResult, busy=resultBusy, error=(editResultId == r.id ? editResultError : ""))
           column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="autosave-card"
             text "Autosave" font-size="1.0625rem" font-weight=800
-            text "Changes save automatically a moment after you stop typing. Results and photos are not editable in this build yet." font-size="0.875rem" line-height="1.25rem"
+            text "Changes save automatically a moment after you stop typing. Results are saved on their own, as you add or save them; photos are not editable in this build yet." font-size="0.875rem" line-height="1.25rem"
             if hasPending or saving
               text "Saving…" font-size="0.8125rem" font-weight=700 testId="save-pending" role="status"
             else if invalid
@@ -609,3 +688,36 @@ component ExperimentEditor
                 text "Try saving again" font-weight=800 font-size="0.875rem" -exact-fit="shrink"
             else if savedId == x.id
               text "All changes saved." font-size="0.8125rem" font-weight=700 testId="save-ok" role="status"
+
+component ResultEntry
+  props
+    expId: string
+    r: ResultItem
+    save: action
+    askDelete: action
+    busy: bool
+    error: string
+  state notes = r.notes
+  derive dirty = notes != r.notes
+  action edit(v: string)
+    notes = v
+  action discard
+    notes = r.notes
+  view
+    column background-color="surface.page" border-radius=12 padding=12 gap=8 testId=`result-${r.id}`
+      row gap=8 flex-wrap="wrap" align-items="center" justify-content="space-between"
+        text r.stamp font-size="0.8125rem" font-weight=800 testId=`result-stamp-${r.id}`
+        button press=askDelete(expId, r.id) disabled=busy aria-label=`Delete result from ${r.stamp}` testId=`result-delete-${r.id}` background-color="danger" color="ink.on-danger" border-radius=999 min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0
+          image "symbol:close"
+      textarea value=notes input=edit aria-label=`Result notes, ${r.stamp}` testId=`result-notes-${r.id}` rows=3 placeholder="Add result details." background-color="surface.card" border-radius=14 padding="12px 14px" height=96
+      if r.photos > 0
+        text `${r.photos} ${r.photos == 1 ? "photo" : "photos"} attached` font-size="0.8125rem" testId=`result-photos-${r.id}`
+      if dirty
+        text "Unsaved changes" font-size="0.8125rem" font-weight=700 testId=`result-dirty-${r.id}` role="status"
+      row gap=8 flex-wrap="wrap"
+        button press=save(expId, r.id, notes) disabled=(busy or not dirty) testId=`result-save-${r.id}` aria-label="Save notes" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem"
+          text "Save notes" font-weight=800 font-size="0.875rem"
+        button press=discard disabled=not dirty testId=`result-revert-${r.id}` aria-label="Discard changes" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem"
+          text "Discard" font-weight=800 font-size="0.875rem"
+      if error != ""
+        text error color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId=`result-error-${r.id}` role="alert"
