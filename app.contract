@@ -4,6 +4,9 @@
 // (the editor autosaves 600 ms after the last edit).
 font "Yellowtail" = "assets/fonts/Yellowtail-Regular.ttf"
 
+shape Viewport
+  width: number
+
 shape ResultItem
   id: string
   stamp: string
@@ -62,6 +65,8 @@ routes nav
 component ExperimemoExact
   resource experiments = experiments() as shape Experiment[] else empty()
   resource time = exactTime() as shape Time
+  resource viewport = exactViewport() as shape Viewport
+  derive wide = viewport.width >= 900
   mutation created as shape Reply refreshes experiments then afterCreate
   mutation saved as shape Reply refreshes experiments
   mutation statusSaved as shape Reply refreshes experiments
@@ -227,6 +232,8 @@ component ExperimemoExact
       resultDrafts = resultDrafts.filter(d => d.id != aimedResultId)
       let at = time.epochAtZero + performanceNow()
       send resultRemoved = removeResultRecord(aimedResultExp, aimedResultId, at)
+  action pickTrack
+    nav = select(nav, "track")
   action pickNew
     nav = select(nav, "new")
   action pick(name: string)
@@ -427,13 +434,15 @@ component ExperimemoExact
                       ExperimentEditor(route=e.id, x=x, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, draft=(draftFor == x.id ? draftNotes : ""), editDraft=editDraft, addResult=addResult, adding=pending(resultAdded), addError=addError, editResult=editResultDraft, retryResult=retryResult, resultDrafts=resultDrafts, askDeleteResult=askDeleteResult, removeResultError=removeResultError, resultBusy=pending(resultEdited) or pending(resultRemoved), hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
                 else if e.name == "track"
                   scroll id=`content-${e.id}` flex=1 min-height=0
-                    column padding=20 gap=20 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
-                      header appearance="none" display="flex" flex-wrap="wrap" align-items="flex-start" gap=12
-                        column flex-grow=1 flex-basis="12rem" min-width=0 gap=8
-                          text "Track experiments" role="heading" aria-level=1 font-size="1.75rem" font-weight=800 line-height=1.4 -exact-fit="shrink"
-                          text "Review every experiment in one place and reopen any record to keep adding observations, notes, and photos." font-size="0.9375rem" line-height="1.375rem"
-                        link href="/info" aria-label="Open app info and settings" testId="info-track" min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
-                          image "symbol:info" font-size="1.375rem"
+                    column padding=20 gap=20 width="100%" box-sizing="border-box"
+                      header appearance="none" display="flex" flex-direction="column" gap=8
+                        row width="100%" align-items="center" flex-wrap="wrap" gap=12
+                          text "Track experiments" role="heading" aria-level=1 font-size="1.75rem" font-weight=800 line-height=1.4 flex=(wide ? "1 1 0" : "1 1 12rem") min-width=0 -exact-fit="shrink"
+                          TopTabs(wide=wide, current="track", goNew=pickNew, goTrack=pickTrack)
+                          row flex=(wide ? "1 1 0" : "0 0 auto") justify-content="flex-end"
+                            link href="/info" aria-label="Open app info and settings" testId="info-track" min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
+                              image "symbol:info" font-size="1.375rem"
+                        text "Review every experiment in one place and reopen any record to keep adding observations, notes, and photos." font-size="0.9375rem" line-height="1.375rem"
                       if pending(experiments)
                         text "Loading experiments…" font-size="0.9375rem" testId="track-loading" role="status"
                       else if failed(experiments)
@@ -463,13 +472,15 @@ component ExperimemoExact
                                 ExperimentCard(x=x)
                 else
                   scroll id=`content-${e.id}` flex=1 min-height=0
-                    column padding=20 gap=16 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
-                      header appearance="none" display="flex" flex-wrap="wrap" align-items="flex-start" gap=12
-                        column flex-grow=1 flex-basis="12rem" min-width=0 gap=8
-                          text "Experimemo" role="heading" aria-level=1 font-family="Yellowtail" font-size="2rem" font-weight=400 line-height=1.6 -exact-fit="shrink"
-                          text "Create a new experiment plan now, then update observations, results, notes, and photos as it unfolds." font-size="0.9375rem" line-height="1.375rem"
-                        link href="/info" aria-label="Open app info and settings" testId="info-new" min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
-                          image "symbol:info" font-size="1.375rem"
+                    column padding=20 gap=16 width="100%" box-sizing="border-box"
+                      header appearance="none" display="flex" flex-direction="column" gap=8
+                        row width="100%" align-items="center" flex-wrap="wrap" gap=12
+                          text "Experimemo" role="heading" aria-level=1 font-family="Yellowtail" font-size="2rem" font-weight=400 line-height=1.6 flex=(wide ? "1 1 0" : "1 1 12rem") min-width=0 -exact-fit="shrink"
+                          TopTabs(wide=wide, current="new", goNew=pickNew, goTrack=pickTrack)
+                          row flex=(wide ? "1 1 0" : "0 0 auto") justify-content="flex-end"
+                            link href="/info" aria-label="Open app info and settings" testId="info-new" min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
+                              image "symbol:info" font-size="1.375rem"
+                        text "Create a new experiment plan now, then update observations, results, notes, and photos as it unfolds." font-size="0.9375rem" line-height="1.375rem"
                       column gap=12
                         column background-color="surface.card" border=(titleError == "" ? "1px solid var(--brand)" : "1px solid var(--warning)") border-radius=12 padding=16 gap=8
                           text "Experiment title" font-size="0.9375rem" font-weight=800
@@ -515,7 +526,7 @@ component ExperimemoExact
                           text (pending(created) ? "Saving..." : "Save experiment")
                         if createError != ""
                           text createError color="warning" font-size="0.8125rem" font-weight=700 testId="create-error" role="alert"
-      row role="tablist"
+      row role="tablist" appearance="none" display=(wide ? "none" : "flex")
         button role="tab" aria-controls="panel-new" aria-selected=(nav.tab == "new") press=pick("new") testId="tab-new" flex=1
           image "symbol:add"
           text "New"
@@ -761,3 +772,19 @@ component ResultEntry
           text "Try saving again" font-weight=800 font-size="0.875rem"
       else if waiting
         text "Saving…" font-size="0.8125rem" font-weight=700 testId=`result-saving-${r.id}` role="status"
+
+// On a wide window the reference draws its tabs as pills across the top of the page; the bar
+// below is then hidden, so each tab is reachable once.
+component TopTabs
+  props
+    wide: bool
+    current: string
+    goNew: action
+    goTrack: action
+  view
+    if wide
+      row role="tablist" gap=8 flex-shrink=0
+        button role="tab" aria-selected=(current == "new") press=goNew testId="tab-new" min-height="2.5rem" padding="0 1rem" border-radius=999 border=(current == "new" ? "1px solid var(--ink)" : "1px solid transparent") background-color=(current == "new" ? "surface.page" : "transparent") color=(current == "new" ? "brand" : "ink") font-weight=800 font-size="0.9375rem"
+          text "New"
+        button role="tab" aria-selected=(current == "track") press=goTrack testId="tab-track" min-height="2.5rem" padding="0 1rem" border-radius=999 border=(current == "track" ? "1px solid var(--ink)" : "1px solid transparent") background-color=(current == "track" ? "surface.page" : "transparent") color=(current == "track" ? "brand" : "ink") font-weight=800 font-size="0.9375rem"
+          text "Track"

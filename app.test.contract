@@ -714,3 +714,15 @@ test "a confirmed result delete removes only that entry, Track says so, and it s
   clock settle
   expect text "result-count" == "0 timestamped entries"
   expect text "edit-category" == "Botany"
+
+test "a wide window draws the reference's top tabs on New and Track and switches between them"
+  size 1133x700
+  expect tree has "tab-track"
+  expect tree has "field-title"
+  tap "tab-track"
+  clock data
+  expect tree has "section-active"
+  expect tree has "tab-new"
+  tap "tab-new"
+  clock settle
+  expect tree has "field-title"
