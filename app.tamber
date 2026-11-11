@@ -7,4 +7,6 @@ theme
   brand = light-dark(#299a0f, #299a0f)
   secondary = light-dark(#b85d13, #d48a45)
   warning = light-dark(#f97316, #fb923c)
-  ink.on-brand = #ffffff  scheme=fixed
+  ink.on-brand = #111827  scheme=fixed
+  ink.on-secondary = light-dark(#ffffff, #111827)
+  danger = #dc2626  scheme=fixed

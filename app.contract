@@ -19,6 +19,8 @@ routes nav
   tab new "/"
     info "/info"
   tab track "/track"
+  onboarding "/onboarding"
+  ready "/onboarding/account-setup"
   notfound
 
 component ExperimemoExact
@@ -36,6 +38,8 @@ component ExperimemoExact
   state hypothesisError = ""
   state procedureError = ""
   state notice = ""
+  state acceptedPrivacy = false
+  state acceptedTerms = false
   action pick(name: string)
     nav = select(nav, name)
   action follow(url: string)
@@ -61,6 +65,16 @@ component ExperimemoExact
     conclusion = v
   action editPlanned(v: string)
     planned = v
+  action setPrivacy(v: bool)
+    acceptedPrivacy = v
+  action setTerms(v: bool)
+    acceptedTerms = v
+  action openSite
+    openURL("https://DavidJGrimsley.com")
+  action openPrivacy
+    openURL("https://davidjgrimsley.com/experimemo/privacy")
+  action openTerms
+    openURL("https://davidjgrimsley.com/experimemo/terms")
   action save
     titleError = (title.trim() == "" ? "Give this experiment a name." : "")
     hypothesisError = (hypothesis.trim() == "" ? "Capture the question or expectation you are testing." : "")
@@ -75,27 +89,87 @@ component ExperimemoExact
               column navigationKey=`${e.id}` navigationScroll=`content-${e.id}` position="absolute" inset=0 background-color="surface.page"
                 if e.name == "notfound"
                   column flex=1 align-items="center" justify-content="center" gap=12 padding=20 testId="notfound"
-                    text "This screen does not exist" role="heading" aria-level=1 font-size="1.75rem" font-weight=800
+                    text "This screen does not exist" role="heading" aria-level=1 font-size="1.75rem" font-weight=800 -exact-fit="shrink"
                     text "Head back to the main app to create or track your experiments." font-size="0.9375rem" line-height="1.375rem" text-align="center"
                     link href="/" testId="go-home" background-color="brand" color="ink.on-brand" border-radius=12 padding="12px 16px" font-weight=800
                       text "Go home"
                 else if e.name == "info"
+                  header
+                    text "App info" role="heading" aria-level=1 -exact-fit="shrink"
                   scroll id=`content-${e.id}` flex=1 min-height=0
                     column padding=20 gap=16 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
-                      header appearance="none"
-                        text "App info" role="heading" aria-level=1 font-size="1.75rem" font-weight=800
                       column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
-                        text "Settings, About and Feedback are not built in this visual slice." font-size="0.875rem" line-height="1.25rem" testId="info-note"
-                      link href="/" testId="info-back" border="1px solid var(--brand)" border-radius=999 padding="12px 16px" align-self="flex-start"
-                        text "Back to New" color="ink" font-weight=800 font-size="0.875rem"
+                        text "SETTINGS" font-size="0.8125rem" font-weight=800
+                        button testId="delete-experiments" aria-disabled=true aria-describedby="settings-unavailable" border="1px solid var(--danger)" border-radius=14 min-height="3.25rem" padding="0.5rem 1rem" opacity=0.65
+                          text "Delete experiments" font-weight=800 font-size="0.875rem" -exact-fit="shrink"
+                        button testId="reset-app" aria-disabled=true aria-describedby="settings-unavailable" border="1px solid var(--secondary)" border-radius=14 min-height="3.25rem" padding="0.5rem 1rem" opacity=0.65
+                          text "Reset app" font-weight=800 font-size="0.875rem" -exact-fit="shrink"
+                        text "Deleting and resetting are unavailable in this build: experiment storage is not connected yet, so nothing can be deleted or reset here." id="settings-unavailable" testId="settings-unavailable" font-size="0.8125rem" line-height="1.25rem" font-weight=700
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "ABOUT" font-size="0.8125rem" font-weight=800
+                        InfoRow(title="About Experimemo", body="Experimemo helps you capture experiment setup, observations, notes, and photos without slowing the work down.", url="", testId="row-about")
+                        InfoRow(title="Support", body="Visit the support page for release notes, contact details, and help.", url="https://davidjgrimsley.com/experimemo/support", testId="row-support")
+                        InfoRow(title="Developer", body="Built by David Grimsley for fast experiment tracking in the lab, classroom, or field.", url="", testId="row-developer")
+                        button press=openSite testId="open-website" aria-label="DavidJGrimsley.com" background-color="secondary" color="ink.on-secondary" border-radius=14 min-height="3rem" padding="0.5rem 1rem" font-weight=800 font-size="0.875rem"
+                          text "DavidJGrimsley.com" -exact-fit="shrink"
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "FEEDBACK" font-size="0.8125rem" font-weight=800
+                        InfoRow(title="How to send feedback", body="Share feedback by opening a GitHub issue with what you tried, what happened, and what you expected.", url="", testId="row-feedback")
+                        InfoRow(title="GitHub repository", body="Open the GitHub repository for updates, issues, ideas, and feature requests.", url="https://github.com/DavidJGrimsley/Experimemo", testId="row-github")
+                        InfoRow(title="Terms of service", body="Read the current terms that apply when using Experimemo.", url="https://davidjgrimsley.com/experimemo/terms", testId="row-terms")
+                        InfoRow(title="Privacy policy", body="Review how Experimemo handles data and privacy.", url="https://davidjgrimsley.com/experimemo/privacy", testId="row-privacy")
+                else if e.name == "onboarding"
+                  header
+                    text "Onboarding" role="heading" aria-level=1 -exact-fit="shrink"
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    column padding=20 gap=14 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
+                      column gap=8
+                        text "Before you begin" role="heading" aria-level=2 font-size="1.75rem" font-weight=800 line-height=1.4 -exact-fit="shrink"
+                        text "Review the privacy policy and terms of service, then continue once both are accepted." font-size="0.9375rem" line-height="1.375rem"
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "Privacy policy" font-size="1.0625rem" font-weight=800
+                        text "Read how Experimemo handles local experiment data, attached photos, and support requests." font-size="0.875rem" line-height="1.25rem"
+                        row gap=12 flex-wrap="wrap" align-items="center" justify-content="space-between"
+                          button press=openPrivacy testId="open-privacy" aria-label="Open policy" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" font-weight=800 font-size="0.875rem"
+                            text "Open policy" -exact-fit="shrink"
+                          row gap=8 flex-wrap="wrap" align-items="center" min-width=0
+                            text "Accepted" font-size="0.875rem" font-weight=700
+                            input type="checkbox" switch checked=acceptedPrivacy change=setPrivacy aria-label="Accept privacy policy" testId="accept-privacy"
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "Terms of service" font-size="1.0625rem" font-weight=800
+                        text "Review the live terms before you start saving and updating experiment records." font-size="0.875rem" line-height="1.25rem"
+                        row gap=12 flex-wrap="wrap" align-items="center" justify-content="space-between"
+                          button press=openTerms testId="open-terms" aria-label="Open terms" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" font-weight=800 font-size="0.875rem"
+                            text "Open terms" -exact-fit="shrink"
+                          row gap=8 flex-wrap="wrap" align-items="center" min-width=0
+                            text "Accepted" font-size="0.875rem" font-weight=700
+                            input type="checkbox" switch checked=acceptedTerms change=setTerms aria-label="Accept terms of service" testId="accept-terms"
+                      if acceptedPrivacy and acceptedTerms
+                        link href="/onboarding/account-setup" testId="continue" background-color="brand" color="ink.on-brand" border-radius=12 min-height="3rem" padding="0.75rem 1rem" font-weight=800 align-self="flex-start" max-width="100%" box-sizing="border-box"
+                          text "Continue"
+                      else
+                        button testId="continue-disabled" aria-label="Continue" aria-disabled=true background-color="surface.card" border-radius=12 min-height="3rem" padding="0.75rem 1rem" opacity=0.7 align-self="flex-start"
+                          text "Continue" font-weight=800
+                else if e.name == "ready"
+                  header
+                    text "Account Setup" role="heading" aria-level=1 -exact-fit="shrink"
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    column padding=20 gap=14 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
+                      text "You are ready to start" role="heading" aria-level=2 font-size="1.75rem" font-weight=800 line-height=1.4 -exact-fit="shrink"
+                      text "Head back into the app to begin creating and tracking your experiments." font-size="0.9375rem" line-height="1.375rem"
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "Next step" font-size="1.0625rem" font-weight=800
+                        text "Create a new experiment or open Track to keep working on something you already saved." font-size="0.875rem" line-height="1.25rem"
+                      link href="/" testId="open-experiments" background-color="brand" color="ink.on-brand" border-radius=12 min-height="3rem" padding="0.75rem 1rem" font-weight=800 align-self="flex-start" max-width="100%" box-sizing="border-box"
+                        text "Open experiments" -exact-fit="shrink"
                 else if e.name == "track"
                   scroll id=`content-${e.id}` flex=1 min-height=0
                     column padding=20 gap=20 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
                       header appearance="none" display="flex" flex-wrap="wrap" align-items="flex-start" gap=12
                         column flex-grow=1 flex-basis="12rem" min-width=0 gap=8
-                          text "Track experiments" role="heading" aria-level=1 font-size="1.75rem" font-weight=800 line-height=1.25
+                          text "Track experiments" role="heading" aria-level=1 font-size="1.75rem" font-weight=800 line-height=1.4 -exact-fit="shrink"
                           text "Review every experiment in one place and reopen any record to keep adding observations, notes, and photos." font-size="0.9375rem" line-height="1.375rem"
-                        link href="/info" aria-label="Open app info and settings" testId="info-track" width=40 height=40 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
+                        link href="/info" aria-label="Open app info and settings" testId="info-track" min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
                           image "symbol:info" font-size="1.375rem"
                       column gap=10
                         text "ACTIVE" font-size="0.8125rem" font-weight=800
@@ -106,11 +180,11 @@ component ExperimemoExact
                                 column flex-grow=1 flex-basis="10rem" min-width=0 gap=4
                                   text x.title font-size="1rem" font-weight=800
                                   text x.meta font-size="0.75rem" line-height="1.125rem"
-                                text x.status background-color=(x.complete ? "secondary" : "brand") color="ink.on-brand" border-radius=999 padding="4px 10px" font-size="0.75rem" font-weight=800
+                                text x.status background-color=(x.complete ? "secondary" : "brand") color=(x.complete ? "ink.on-secondary" : "ink.on-brand") border-radius=999 padding="4px 10px" font-size="0.75rem" font-weight=800
                               column gap=4
                                 text "Hypothesis" font-size="0.75rem" font-weight=800
                                 text x.hypothesis font-size="0.875rem" line-height="1.25rem"
-                                text "Observations" font-size="0.75rem" font-weight=800
+                                text "Observations" font-size="0.75rem" font-weight=800 -exact-fit="shrink"
                                 text x.observations font-size="0.875rem" line-height="1.25rem"
                                 text "Results" font-size="0.75rem" font-weight=800
                                 text x.results font-size="0.875rem" line-height="1.25rem"
@@ -122,9 +196,9 @@ component ExperimemoExact
                     column padding=20 gap=16 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
                       header appearance="none" display="flex" flex-wrap="wrap" align-items="flex-start" gap=12
                         column flex-grow=1 flex-basis="12rem" min-width=0 gap=8
-                          text "Experimemo" role="heading" aria-level=1 font-family="Yellowtail" font-size="2rem" font-weight=400 line-height="2.5rem"
+                          text "Experimemo" role="heading" aria-level=1 font-family="Yellowtail" font-size="2rem" font-weight=400 line-height=1.6 -exact-fit="shrink"
                           text "Create a new experiment plan now, then update observations, results, notes, and photos as it unfolds." font-size="0.9375rem" line-height="1.375rem"
-                        link href="/info" aria-label="Open app info and settings" testId="info-new" width=40 height=40 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
+                        link href="/info" aria-label="Open app info and settings" testId="info-new" min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
                           image "symbol:info" font-size="1.375rem"
                       column gap=12
                         column background-color="surface.card" border=(titleError == "" ? "1px solid var(--brand)" : "1px solid var(--warning)") border-radius=12 padding=16 gap=8
@@ -149,7 +223,7 @@ component ExperimemoExact
                           text "Data collection plan" font-size="0.9375rem" font-weight=800
                           textarea value=dataPlan input=editDataPlan placeholder="What measurements, photos, and observations will you capture?" aria-label="Data collection plan" testId="field-dataplan" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
                         column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
-                          text "Observations" font-size="0.9375rem" font-weight=800
+                          text "Observations" font-size="0.9375rem" font-weight=800 -exact-fit="shrink"
                           textarea value=observations input=editObservations placeholder="You can leave this blank until you start recording observations." aria-label="Observations" testId="field-observations" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
                         column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
                           text "Field notes" font-size="0.9375rem" font-weight=800
@@ -167,7 +241,7 @@ component ExperimemoExact
                       column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
                         text "Save and continue later" font-size="1.0625rem" font-weight=800
                         text "Your experiment appears in Track right away so you can keep building it out whenever you need to." font-size="0.875rem" line-height="1.25rem"
-                        button press=save testId="save" aria-label="Save experiment" background-color="secondary" color="ink.on-brand" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem"
+                        button press=save testId="save" aria-label="Save experiment" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem"
                           text "Save experiment"
                         if notice != ""
                           text notice font-size="0.8125rem" font-weight=700 testId="notice" role="status"
@@ -178,3 +252,23 @@ component ExperimemoExact
         button role="tab" aria-controls="panel-track" aria-selected=(nav.tab == "track") press=pick("track") testId="tab-track" flex=1
           image "symbol:package"
           text "Track"
+
+component InfoRow
+  props
+    title: string
+    body: string
+    url: string
+    testId: string
+  action open
+    openURL(url)
+  view
+    if url == ""
+      column gap=2 testId=testId
+        text title font-size="0.9375rem" font-weight=800
+        text body font-size="0.875rem" line-height="1.25rem"
+    else
+      button press=open testId=testId aria-label=title display="flex" flex-wrap="wrap" align-items="center" gap=8 text-align="left" padding="0.25rem 0"
+        column flex-grow=1 flex-basis="10rem" min-width=0 gap=2
+          text title font-size="0.9375rem" font-weight=800
+          text body font-size="0.875rem" line-height="1.25rem"
+        text "Open" font-size="0.8125rem" font-weight=800 color="ink"

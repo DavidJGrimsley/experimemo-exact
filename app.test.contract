@@ -14,7 +14,45 @@ test "Track shows both example cards"
   expect tree has "card-experiment-seed-1"
   expect tree has "card-experiment-seed-2"
 
-test "the info action opens app info"
+test "app info lists About, Feedback and links, and says delete and reset are unavailable"
   tap "info-new"
   clock settle
-  expect tree has "info-note"
+  expect tree has "settings-unavailable"
+  expect tree has "delete-experiments"
+  expect tree has "reset-app"
+  expect tree has "row-about"
+  expect tree has "row-support"
+  expect tree has "row-developer"
+  expect tree has "open-website"
+  expect tree has "row-feedback"
+  expect tree has "row-github"
+  expect tree has "row-terms"
+  expect tree has "row-privacy"
+
+test "app info opens from Track too"
+  tap "tab-track"
+  tap "info-track"
+  clock settle
+  expect tree has "row-privacy"
+
+test "onboarding Continue needs both acceptances"
+  at "/onboarding"
+  expect tree has "continue-disabled"
+  expect tree missing "continue"
+  type "accept-privacy" "true"
+  expect tree has "continue-disabled"
+  type "accept-terms" "true"
+  expect tree has "continue"
+  tap "continue"
+  clock settle
+  expect tree has "open-experiments"
+  tap "open-experiments"
+  clock settle
+  expect tree has "field-title"
+
+test "an unknown path shows not-found and Go home returns to New"
+  at "/nowhere"
+  expect tree has "notfound"
+  tap "go-home"
+  clock settle
+  expect tree has "field-title"
