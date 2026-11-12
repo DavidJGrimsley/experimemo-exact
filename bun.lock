@@ -1,0 +1,18 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "experimemo-exact",
+      "dependencies": {
+        "@exact/camera": "file:../../../temp/exact-upstream/packages/camera",
+        "@exact/media-capture": "file:../../../temp/exact-upstream/packages/media-capture",
+      },
+    },
+  },
+  "packages": {
+    "@exact/camera": ["@exact/camera@file:../../../temp/exact-upstream/packages/camera", { "peerDependencies": { "@exact/media-capture": "1.0.0" }, "optionalPeers": ["@exact/media-capture"] }],
+
+    "@exact/media-capture": ["@exact/media-capture@file:../../../temp/exact-upstream/packages/media-capture", {}],
+  }
+}

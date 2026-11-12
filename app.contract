@@ -1,24 +1,1159 @@
-// Experimemo: the view. app.ts answers what it asks for. Colours, fonts,
-// sizes and the safe area are left unsaid, so each platform supplies its own:
-// the header is the navigation bar, its heading the title, its button a bar item.
-shape Greeting
-  text: string
+// Experimemo, visual foundation: the branded shell, New and Track. Colours live in
+// app.tamber (the reference theme tokens, light and dark by the system scheme).
+// Records are app.ts's (experiment-data.ts, one file). Not built here: result entries, photos,
+// (the editor autosaves 600 ms after the last edit).
+use getUserMedia, stopTrack, cameraStatus, MediaStream, MediaStreamTrack, CameraStatus from "@exact/media-capture"
+use takePhoto, Photo as CameraPhoto from "@exact/camera"
+
+font "Yellowtail" = "assets/fonts/Yellowtail-Regular.ttf"
+
+shape Viewport
+  width: number
+
+// A stored photo: its durable file under app:/data/photos and what the picker reported.
+shape Photo
+  id: string
+  uri: string
+  name: string
+  mime: string
+  width: number
+  height: number
+
+shape PhotoReply
+  ok: bool
+  id: string
+  error: string
+  photos: Photo[]
+
+shape ResultItem
+  id: string
+  stamp: string
+  notes: string
+  photos: number
+  photoItems: Photo[]
+
+// One unsaved edit of one result's notes; each result has its own, so edits to several never overwrite each other.
+shape ResultDraft
+  expId: string
+  id: string
+  notes: string
+  failed: bool
+  error: string
+
+shape FieldDraft
+  id: string
+  title: string
+  category: string
+  hypothesis: string
+  procedure: string
+  dataPlan: string
+  observations: string
+  notes: string
+  conclusion: string
+  planned: number
+  version: number
+  failed: bool
+  error: string
+
+// A staged photo waiting in one experiment's new-result draft; it is that experiment's, wherever the person goes meanwhile.
+shape DraftPhoto
+  owner: string
+  photo: Photo
+
+// The unsaved new-result notes of one experiment.
+shape NoteDraft
+  expId: string
+  notes: string
+
+// One staging sent and not yet answered: whose photos they are ("new", or an experiment id), fixed when it is sent.
+// `resets` is the count of Resets then, so a staging that outlives a Reset is thrown away.
+shape StageJob
+  id: string
+  owner: string
+  resets: number
+
+shape Experiment
+  id: string
+  title: string
+  category: string
+  hypothesis: string
+  procedure: string
+  dataPlan: string
+  observationsText: string
+  notes: string
+  conclusion: string
+  planned: number
+  status: string
+  complete: bool
+  meta: string
+  badge: string
+  observations: string
+  results: string
+  entryCount: string
+  photoList: Photo[]
+  entries: ResultItem[]
+  plannedLabel: string
+  conclusionLabel: string
+
+shape Reply
+  ok: bool
+  id: string
+  error: string
+
+shape Time
+  epochAtZero: number
+  utcOffset: number
 
 routes nav
-  home "/"
+  tab new "/"
+    info "/info"
+      delete "/info/delete"
+  tab track "/track"
+    experiment "/experiment/:id"
+  onboarding "/onboarding"
+  ready "/onboarding/account-setup"
+  notfound
 
 component ExperimemoExact
-  resource greeting = greeting("Experimemo") as shape Greeting
-  state liked = false
-  action like
-    liked = not liked
+  resource experiments = experiments() as shape Experiment[] else empty()
+  resource time = exactTime() as shape Time
+  resource viewport = exactViewport() as shape Viewport
+  resource camStatus = cameraStatus() as shape CameraStatus else empty()
+  derive wide = viewport.width >= 900
+  mutation created as shape Reply refreshes experiments then afterCreate
+  mutation saved as shape Reply refreshes experiments then afterSave
+  mutation statusSaved as shape Reply refreshes experiments
+  mutation removed as shape Reply refreshes experiments then afterRemove
+  mutation staged as shape PhotoReply then afterStage
+  mutation attached as shape PhotoReply refreshes experiments then afterAttach
+  mutation detached as shape PhotoReply refreshes experiments then afterDetach
+  mutation discarded as shape PhotoReply
+  mutation camOpened as shape MediaStream then armCamera
+  mutation camShot as shape CameraPhoto then afterShot
+  mutation camStopped as shape MediaStreamTrack
+  mutation camDropped as shape PhotoReply
+  mutation dropped as shape PhotoReply
+  mutation resultAdded as shape Reply refreshes experiments then afterResultAdd
+  mutation resultEdited as shape Reply refreshes experiments then afterResultEdit
+  mutation resultRemoved as shape Reply refreshes experiments then afterResultRemove
+  mutation resetDone as shape Reply refreshes experiments then afterReset
+  // The editor's latest valid draft, waiting out its 600 ms (hasPending), kept until a reply says it is stored.
+  state autoKey = 0
+  state fieldDrafts: FieldDraft[] = []
+  state sentFieldId = ""
+  state sentFieldVersion = 0
+  state aimedId = ""
+  state aimedResultExp = ""
+  state aimedResultId = ""
+  state removingResultId = ""
+  state resultDrafts: ResultDraft[] = []
+  state resultKey = 0
+  state sentResultId = ""
+  state sentResultNotes = ""
+  state pickScope = ""
+  state pickExp = ""
+  state pickResult = ""
+  state photoMade = 0
+  state newPhotos: Photo[] = []
+  // Each experiment's new-result draft (its notes, its staged photos), kept apart so one never shows or saves another's.
+  state draftPhotoSets: DraftPhoto[] = []
+  state noteDrafts: NoteDraft[] = []
+  // The result being saved: its experiment, notes and photo ids, as sent, so its reply clears only those.
+  state addingFor = ""
+  state addingNotes = ""
+  state addingPhotoIds: string[] = []
+  // The library pick's destination, fixed when the picker opens.
+  state libScope = ""
+  state libExp = ""
+  state libResult = ""
+  // Stagings in flight, each with its owner; experiments deleted this run; Resets this run; the record being deleted.
+  state stageJobs: StageJob[] = []
+  state goneExps: string[] = []
+  state resets = 0
+  state removingId = ""
+  state photoNote = ""
+  state photoNoteKey = ""
+  state camOpen = false
+  state camTrack = ""
+  // Each open of the camera sheet is one session; closing it ends it. A shot keeps the session and the
+  // destination it was taken for, so one that lands after its sheet closed is thrown away, never filed elsewhere.
+  state camSession = 0
+  state shotSession = 0
+  state shotResets = 0
+  state shotScope = ""
+  state shotExp = ""
+  state shotResult = ""
+  derive camOpenError = match failure(camOpened) { case some(f) => (f.code == "NotAllowedError" or f.code == "denied" ? "Camera access was denied. Allow the camera in your browser or system settings, then choose Take Photo again." : (f.code == "NotFoundError" ? "No camera was found on this device." : `The camera could not be opened: ${f.message}`)), case none => "" }
+  derive camShotError = match failure(camShot) { case some(f) => `The photo could not be taken: ${f.message}`, case none => "" }
+  derive shotErrorShown = shotSession == camSession ? camShotError : ""
+  derive shotPath = match camShot { case some(p) => p.path, case none => "" }
+  derive shotType = match camShot { case some(p) => p.type, case none => "" }
+  derive shotSize = match camShot { case some(p) => p.size, case none => 0 }
+  derive shotWidth = match camShot { case some(p) => p.width, case none => 0 }
+  derive shotHeight = match camShot { case some(p) => p.height, case none => 0 }
+  derive stagedPhotos = match staged { case some(r) => r.photos, case none => [] }
+  derive stagedError = match staged { case some(r) => r.error, case none => "" }
+  derive stagedId = match staged { case some(r) => r.id, case none => "" }
+  derive attachedError = match attached { case some(r) => r.error, case none => "" }
+  derive detachedError = match detached { case some(r) => r.error, case none => "" }
+  derive photoBusy = pending(staged) or pending(attached) or pending(detached)
+  state resultMade = 0
+  state aimedTitle = ""
+  state made = 0
+  state createError = ""
+  state title = ""
+  state category = ""
+  state hypothesis = ""
+  state procedure = ""
+  state dataPlan = ""
+  state observations = ""
+  state fieldNotes = ""
+  state conclusion = ""
+  state planned = "0"
+  state titleError = ""
+  state hypothesisError = ""
+  state procedureError = ""
+  state acceptedPrivacy = false
+  state acceptedTerms = false
+  derive plannedNum = match parseNumber(planned) { case some(v) => (v < 0 ? 0 : round(v)), case none => 0 }
+  derive createdOk = match created { case some(r) => r.ok, case none => false }
+  derive createdError = match created { case some(r) => r.error, case none => "" }
+  derive loadError = match failure(experiments) { case some(f) => f.message, case none => "" }
+  derive savedError = match saved { case some(r) => r.error, case none => "" }
+  derive savedId = match saved { case some(r) => r.id, case none => "" }
+  derive removedError = match removed { case some(r) => r.error, case none => "" }
+  derive resetError = match resetDone { case some(r) => r.error, case none => "" }
+  derive addError = match resultAdded { case some(r) => r.error, case none => "" }
+  derive editResultError = match resultEdited { case some(r) => r.error, case none => "" }
+  derive nextResultId = match first(resultDrafts.filter(d => not d.failed)) { case some(d) => d.id, case none => "" }
+  derive nextResultExp = match first(resultDrafts.filter(d => not d.failed)) { case some(d) => d.expId, case none => "" }
+  derive nextResultNotes = match first(resultDrafts.filter(d => not d.failed)) { case some(d) => d.notes, case none => "" }
+  derive removeResultError = match resultRemoved { case some(r) => r.error, case none => "" }
+  derive statusError = match statusSaved { case some(r) => r.error, case none => "" }
+  derive hasPending = fieldDrafts.filter(d => not d.failed and d.title.trim() != "" and d.hypothesis.trim() != "").length > 0
+  task autosave when hasPending key=autoKey
+    after(600, flushAutosave)
+  // Result notes autosave like the other fields: 600 ms after the last edit, one result at a time.
+  task resultAutosave when nextResultId != "" key=resultKey
+    after(600, flushResults)
+  action done
+    nav = back(nav)
+  // A delete asks first, naming the record; Cancel leaves it alone.
+  action askDelete(id: string, title: string)
+    aimedId = id
+    aimedTitle = title
+    showModal("delete-confirm")
+  action confirmDelete
+    if not pending(removed)
+      removingId = aimedId
+      send removed = deleteExperimentRecord(aimedId)
+  // Once the record is gone, its new-result draft goes too: the staged photos' files are removed, and a
+  // staging for it still in flight is thrown away when it lands (goneExps). A refused delete keeps the draft.
+  action afterRemove
+    if removedError == "" and not failed(removed)
+      goneExps = goneExps.concat([removingId])
+      resultDrafts = resultDrafts.filter(d => d.expId != removingId)
+      fieldDrafts = fieldDrafts.filter(d => d.id != removingId)
+      let leftover = draftPhotoSets.filter(d => d.owner == removingId).map(d => d.photo.uri)
+      draftPhotoSets = draftPhotoSets.filter(d => d.owner != removingId)
+      noteDrafts = noteDrafts.filter(d => d.expId != removingId)
+      if leftover.length > 0
+        send dropped = discardPhotoFiles(leftover)
+  action askReset
+    showModal("reset-confirm")
+  action confirmReset
+    if not pending(resetDone)
+      send resetDone = resetExperimentRecords()
+  // Leave App info for an empty Track only when the reply says the file was cleared.
+  action afterReset
+    if resetError == "" and not failed(resetDone)
+      // Every result draft belonged to a record now gone: its staged files go, and a staging in flight is thrown away.
+      resets = resets + 1
+      newPhotos = []
+      resultDrafts = []
+      fieldDrafts = []
+      let leftover = draftPhotoSets.map(d => d.photo.uri)
+      draftPhotoSets = []
+      noteDrafts = []
+      if leftover.length > 0
+        send dropped = discardPhotoFiles(leftover)
+      let fromDelete = top(nav).name == "delete" ? back(nav) : nav
+      let fromInfo = top(fromDelete).name == "info" ? back(fromDelete) : fromDelete
+      nav = select(fromInfo, "track")
+  action reload
+    refresh experiments
+  // The editor reports each edit with the whole draft; only a valid one is armed for saving,
+  // and each edit restarts the 600 ms. Nothing is sent on open.
+  action touch(id: string, title: string, category: string, hypothesis: string, procedure: string, dataPlan: string, observations: string, notes: string, conclusion: string, planned: number)
+    let next = autoKey + 1
+    autoKey = next
+    fieldDrafts = fieldDrafts.filter(d => d.id != id).concat([FieldDraft(id=id, title=title, category=category, hypothesis=hypothesis, procedure=procedure, dataPlan=dataPlan, observations=observations, notes=notes, conclusion=conclusion, planned=planned, version=next, failed=false, error="")])
+  // A save already in flight is waited out: the timer is armed again instead of overlapping it.
+  action flushAutosave
+    if hasPending
+      if pending(saved)
+        autoKey = autoKey + 1
+      else
+        match first(fieldDrafts.filter(d => not d.failed and d.title.trim() != "" and d.hypothesis.trim() != ""))
+          case some(d)
+            let at = time.epochAtZero + performanceNow()
+            sentFieldId = d.id
+            sentFieldVersion = d.version
+            send saved = saveExperimentRecord(d.id, at, d.title, d.category, d.hypothesis, d.procedure, d.dataPlan, d.observations, d.notes, d.conclusion, d.planned)
+          case none
+  action afterSave
+    if savedError == "" and not failed(saved)
+      fieldDrafts = fieldDrafts.filter(d => not (d.id == sentFieldId and d.version == sentFieldVersion))
+    else
+      fieldDrafts = fieldDrafts.map(d => (d.id == sentFieldId and d.version == sentFieldVersion) ? FieldDraft(id=d.id, title=d.title, category=d.category, hypothesis=d.hypothesis, procedure=d.procedure, dataPlan=d.dataPlan, observations=d.observations, notes=d.notes, conclusion=d.conclusion, planned=d.planned, version=d.version, failed=true, error=(savedError == "" ? "Could not save these changes." : savedError)) : d)
+    autoKey = autoKey + 1
+  action retrySave(id: string)
+    fieldDrafts = fieldDrafts.map(d => d.id == id ? FieldDraft(id=d.id, title=d.title, category=d.category, hypothesis=d.hypothesis, procedure=d.procedure, dataPlan=d.dataPlan, observations=d.observations, notes=d.notes, conclusion=d.conclusion, planned=d.planned, version=d.version, failed=false, error="") : d)
+    autoKey = autoKey + 1
+    refresh experiments
+  // Result entries are stored at once, one at a time; the timestamp is taken here, never typed.
+  // Each experiment keeps its own new-result notes; typing in one never touches another's.
+  action editDraft(id: string, v: string)
+    noteDrafts = noteDrafts.filter(d => d.expId != id).concat([NoteDraft(expId=id, notes=v)])
+  // Save result sends that experiment's own notes and staged photos, and nothing of any other draft.
+  action addResult(id: string)
+    let notes = match first(noteDrafts.filter(d => d.expId == id)) { case some(d) => d.notes, case none => "" }
+    let photos = draftPhotoSets.filter(d => d.owner == id).map(d => d.photo)
+    if (notes.trim() != "" or photos.length > 0) and not pending(resultAdded) and not pending(time)
+      let at = time.epochAtZero + performanceNow()
+      addingFor = id
+      addingNotes = notes
+      addingPhotoIds = photos.map(p => p.id)
+      send resultAdded = addResultRecord(id, `result-${at}-${resultMade}`, at, notes, photos)
+      resultMade = resultMade + 1
+  // The draft is cleared only when the reply says the entry is stored, and only of what was sent:
+  // notes edited and photos staged while it saved stay in the draft.
+  action afterResultAdd
+    if addError == "" and not failed(resultAdded)
+      noteDrafts = noteDrafts.filter(d => not (d.expId == addingFor and d.notes == addingNotes))
+      draftPhotoSets = draftPhotoSets.filter(d => not (d.owner == addingFor and addingPhotoIds.includes(d.photo.id)))
+  // An edit replaces that result's draft only; the timer restarts, and a failed draft waits for Retry.
+  action editResultDraft(expId: string, id: string, notes: string)
+    resultDrafts = resultDrafts.filter(d => d.id != id).concat([ResultDraft(expId=expId, id=id, notes=notes, failed=false, error="")])
+    resultKey = resultKey + 1
+  // A save in flight is waited out. A draft leaves the list only when its reply says the file holds
+  // exactly those notes; one edited meanwhile stays and is sent next.
+  action flushResults
+    if nextResultId != ""
+      if pending(resultEdited) or pending(time)
+        resultKey = resultKey + 1
+      else
+        let at = time.epochAtZero + performanceNow()
+        sentResultId = nextResultId
+        sentResultNotes = nextResultNotes
+        send resultEdited = editResultRecord(nextResultExp, nextResultId, at, nextResultNotes)
+  action afterResultEdit
+    if editResultError == "" and not failed(resultEdited)
+      resultDrafts = resultDrafts.filter(d => not (d.id == sentResultId and d.notes == sentResultNotes))
+    else
+      resultDrafts = resultDrafts.map(d => (d.id == sentResultId and d.notes == sentResultNotes) ? ResultDraft(expId=d.expId, id=d.id, notes=d.notes, failed=true, error=(editResultError == "" ? "Could not save these notes." : editResultError)) : d)
+    resultKey = resultKey + 1
+  action retryResult(id: string)
+    resultDrafts = resultDrafts.map(d => d.id == id ? ResultDraft(expId=d.expId, id=d.id, notes=d.notes, failed=false, error="") : d)
+    resultKey = resultKey + 1
+  action askDeleteResult(id: string, resultId: string)
+    aimedResultExp = id
+    aimedResultId = resultId
+    showModal("result-delete-confirm")
+  action confirmDeleteResult
+    if not pending(resultRemoved)
+      removingResultId = aimedResultId
+      let at = time.epochAtZero + performanceNow()
+      send resultRemoved = removeResultRecord(aimedResultExp, aimedResultId, at)
+  action afterResultRemove
+    if removeResultError == "" and not failed(resultRemoved)
+      resultDrafts = resultDrafts.filter(d => d.id != removingResultId)
+  // Photos: one hidden file input for the whole app; askPhotos says where the chosen files go.
+  // New and a result draft keep theirs staged (copied, referenced by nothing) until Save; an
+  // experiment or result already stored takes them at once.
+  action askPhotos(scope: string, expId: string, resultId: string)
+    pickScope = scope
+    pickExp = expId
+    pickResult = resultId
+    photoNote = ""
+    photoNoteKey = scope == "new" ? "new" : (scope == "draft" ? `draft-${expId}` : (scope == "result" ? `result-${resultId}` : `exp-${expId}`))
+    showModal("photo-source")
+  action chooseLibrary
+    libScope = pickScope
+    libExp = pickExp
+    libResult = pickResult
+    showPicker("photo-picker")
+  action sourceCancelled
+    photoNote = "Photo selection cancelled. Nothing was changed."
+  action chooseCamera
+    if not camStatus.available
+      photoNote = "The camera is not available here. Choose photos from your library instead."
+    else
+      camOpen = true
+      camTrack = ""
+      camSession = camSession + 1
+      showModal("camera-dialog")
+      send camOpened = getUserMedia(video=true)
+  // A stream that arrives after the sheet closed is stopped at once, so the camera never stays on.
+  action armCamera
+    match camOpened
+      case some(s)
+        let t = match s.tracks.at(0) { case some(t) => t.id, case none => "" }
+        if camOpen
+          camTrack = t
+        else if t != ""
+          send camStopped = stopTrack(track=t)
+      case none
+        camTrack = ""
+  action closeCamera
+    camOpen = false
+    camSession = camSession + 1
+    if camTrack != ""
+      send camStopped = stopTrack(track=camTrack)
+    camTrack = ""
+    close("camera-dialog")
+    photoNote = "Photo capture cancelled. Nothing was changed."
+  action cameraDismissed
+    camOpen = false
+    camSession = camSession + 1
+    if camTrack != ""
+      send camStopped = stopTrack(track=camTrack)
+    camTrack = ""
+    photoNote = "Photo capture cancelled. Nothing was changed."
+  action shutter
+    if camTrack != "" and not pending(camShot) and not photoBusy and not pending(time)
+      let at = time.epochAtZero + performanceNow()
+      let n = photoMade + 1
+      photoMade = n
+      shotSession = camSession
+      shotResets = resets
+      shotScope = pickScope
+      shotExp = pickExp
+      shotResult = pickResult
+      send camShot = takePhoto(track=camTrack, path=`app:/tmp/camera/shot-${at}-${n}`)
+  // A shot from a sheet since closed (or closed and opened again, perhaps for another record) is
+  // stale: its file is removed and nothing else changes; the open sheet, if any, is left alone.
+  action afterShot
+    if camShotError == "" and not failed(camShot)
+      if shotSession != camSession or shotResets != resets or not camOpen
+        send camDropped = discardCameraShot(shotPath)
+      else if photoBusy
+        send camDropped = discardCameraShot(shotPath)
+        photoNote = "Another photo change is still saving. Try again in a moment."
+      else
+        let at = time.epochAtZero + performanceNow()
+        let n = photoMade
+        camOpen = false
+        camSession = camSession + 1
+        send camStopped = stopTrack(track=camTrack)
+        camTrack = ""
+        close("camera-dialog")
+        if shotScope == "new" or shotScope == "draft"
+          stageJobs = stageJobs.concat([StageJob(id=`photo-${at}-${n}`, owner=(shotScope == "new" ? "new" : shotExp), resets=resets)])
+          send staged = stageCameraPhoto(`photo-${at}-${n}`, at, shotPath, shotType, shotSize, shotWidth, shotHeight)
+        else
+          send attached = attachCameraPhoto(shotExp, shotResult, `photo-${at}-${n}`, at, shotPath, shotType, shotSize, shotWidth, shotHeight)
+  action photosCancelled
+    photoNote = "Photo selection cancelled. Nothing was changed."
+  action photosPicked(files: Picked[])
+    if files.length == 0
+      photoNote = "Photo selection cancelled. Nothing was changed."
+    else if not photoBusy and not pending(time)
+      let at = time.epochAtZero + performanceNow()
+      let n = photoMade + 1
+      photoMade = n
+      if libScope == "new" or libScope == "draft"
+        stageJobs = stageJobs.concat([StageJob(id=`photo-${at}-${n}`, owner=(libScope == "new" ? "new" : libExp), resets=resets)])
+        send staged = stagePhotoFiles(`photo-${at}-${n}`, at, files)
+      else
+        send attached = attachPhotoRecord(libExp, libResult, `photo-${at}-${n}`, at, files)
+    else
+      photoNote = "Another photo change is still saving. Try again in a moment."
+  // A staging lands with the owner it was sent for (its reply's id names it), whichever screen is open now:
+  // New's photos, or that one experiment's draft. One whose experiment was deleted, or sent before a
+  // Reset, is unwanted: its copies are removed. A reply no staging accounts for is removed too.
+  action afterStage
+    let job = first(stageJobs.filter(j => j.id == stagedId))
+    stageJobs = stagedId == "" ? [] : stageJobs.filter(j => j.id != stagedId)
+    match job
+      case some(j)
+        if stagedError == "" and not failed(staged)
+          if j.resets != resets
+            send dropped = discardPhotoFiles(stagedPhotos.map(p => p.uri))
+          else if j.owner == "new"
+            newPhotos = newPhotos.concat(stagedPhotos)
+          else if goneExps.includes(j.owner)
+            send dropped = discardPhotoFiles(stagedPhotos.map(p => p.uri))
+          else
+            draftPhotoSets = draftPhotoSets.concat(stagedPhotos.map(p => DraftPhoto(owner=j.owner, photo=p)))
+        else
+          photoNoteKey = j.owner == "new" ? "new" : `draft-${j.owner}`
+          photoNote = (stagedError == "" ? "Could not add the photos." : stagedError)
+      case none
+        if stagedPhotos.length > 0
+          send dropped = discardPhotoFiles(stagedPhotos.map(p => p.uri))
+        else if stagedError != "" or failed(staged)
+          photoNote = (stagedError == "" ? "Could not add the photos." : stagedError)
+  action afterAttach
+    if attachedError != "" or failed(attached)
+      photoNote = (attachedError == "" ? "Could not add the photos." : attachedError)
+  action afterDetach
+    if detachedError != "" or failed(detached)
+      photoNote = (detachedError == "" ? "Could not remove the photo." : detachedError)
+  action removePhotoFrom(scope: string, expId: string, resultId: string, photoId: string, uri: string)
+    photoNote = ""
+    photoNoteKey = scope == "new" ? "new" : (scope == "draft" ? `draft-${expId}` : (scope == "result" ? `result-${resultId}` : `exp-${expId}`))
+    if scope == "new"
+      newPhotos = newPhotos.filter(p => p.id != photoId)
+      send discarded = discardPhotoFile(uri)
+    else if scope == "draft"
+      draftPhotoSets = draftPhotoSets.filter(d => not (d.owner == expId and d.photo.id == photoId))
+      send discarded = discardPhotoFile(uri)
+    else if not photoBusy and not pending(time)
+      let at = time.epochAtZero + performanceNow()
+      send detached = removePhotoRecord(expId, resultId, photoId, at)
+    else
+      photoNote = "Another photo change is still saving. Try again in a moment."
+  action removeNewPhoto(photoId: string, uri: string)
+    removePhotoFrom("new", "", "", photoId, uri)
+  action pickTrack
+    nav = select(nav, "track")
+  action pickNew
+    nav = select(nav, "new")
+  action pick(name: string)
+    nav = select(nav, name)
+  action follow(url: string)
+    nav = go(nav, url)
+  action editTitle(v: string)
+    title = v
+    titleError = ""
+  action editCategory(v: string)
+    category = v
+  action editHypothesis(v: string)
+    hypothesis = v
+    hypothesisError = ""
+  action editProcedure(v: string)
+    procedure = v
+    procedureError = ""
+  action editDataPlan(v: string)
+    dataPlan = v
+  action editObservations(v: string)
+    observations = v
+  action editFieldNotes(v: string)
+    fieldNotes = v
+  action editConclusion(v: string)
+    conclusion = v
+  action editPlanned(v: string)
+    planned = v
+  action setPrivacy(v: bool)
+    acceptedPrivacy = v
+  action setTerms(v: bool)
+    acceptedTerms = v
+  action openSite
+    openURL("https://DavidJGrimsley.com")
+  action openPrivacy
+    openURL("https://davidjgrimsley.com/experimemo/privacy")
+  action openTerms
+    openURL("https://davidjgrimsley.com/experimemo/terms")
+  action save
+    titleError = (title.trim() == "" ? "Give this experiment a name." : "")
+    hypothesisError = (hypothesis.trim() == "" ? "Capture the question or expectation you are testing." : "")
+    procedureError = (procedure.trim() == "" ? "Add the repeatable steps before saving." : "")
+    createError = ""
+    if title.trim() != "" and hypothesis.trim() != "" and procedure.trim() != "" and not pending(created) and not pending(time) and not photoBusy and not pending(camShot) and not camOpen
+      let at = time.epochAtZero + performanceNow()
+      send created = createExperimentRecord(`experiment-${at}-${made}`, at, title, category, hypothesis, procedure, dataPlan, observations, fieldNotes, conclusion, plannedNum, newPhotos)
+      made = made + 1
+  // Clear the form and open Track only when the reply says the record is stored; a refusal keeps every field.
+  action afterCreate
+    createError = createdError
+    if createdOk
+      title = ""
+      category = ""
+      hypothesis = ""
+      procedure = ""
+      dataPlan = ""
+      observations = ""
+      fieldNotes = ""
+      conclusion = ""
+      planned = "0"
+      newPhotos = []
+      nav = select(nav, "track")
+  action changeStatus(id: string, status: string)
+    let at = time.epochAtZero + performanceNow()
+    send statusSaved = setExperimentStatus(id, at, status)
   view
-    main testId="root" navigationKey=`${top(nav).id}` navigationBack="back" width="100%" height="100%"
-      for e in stack(nav) key=e.id
-        column navigationKey=`${e.id}` navigationScroll="content" position="absolute" inset=0 display="flex" flex-direction="column"
-          header display="flex" align-items="center"
-            text "Experimemo" role="heading" aria-level=1 flex=1
-            button press=like aria-label=(liked ? "Unlike" : "Like") testId="like"
-              image (liked ? "symbol:heart-fill" : "symbol:heart")
-          scroll id="content" flex=1 min-height=0 padding=16
-            text greeting.text testId="greeting"
+    main testId="root" navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow width="100%" height="100%" display="flex" flex-direction="column" background-color="surface.page" color="ink" accent-color="brand"
+      column flex=1 min-height=0 position="relative"
+        for t in nav.tabs key=t.name
+          column role="tabpanel" id=`panel-${t.name}` position="absolute" inset=0
+            for e in t.stack key=e.id
+              column navigationKey=`${e.id}` navigationScroll=`content-${e.id}` position="absolute" inset=0 background-color="surface.page"
+                if e.name == "notfound"
+                  column flex=1 align-items="center" justify-content="center" gap=12 padding=20 testId="notfound"
+                    text "This screen does not exist" role="heading" aria-level=1 font-size="1.75rem" font-weight=800 -exact-fit="shrink"
+                    text "Head back to the main app to create or track your experiments." font-size="0.9375rem" line-height="1.375rem" text-align="center"
+                    link href="/" testId="go-home" background-color="brand" color="ink.on-brand" border-radius=12 padding="12px 16px" font-weight=800
+                      text "Go home"
+                else if e.name == "delete"
+                  header
+                    text "Delete experiments" role="heading" aria-level=1 -exact-fit="shrink"
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    column padding=20 gap=12 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
+                      if pending(experiments)
+                        text "Loading experiments…" font-size="0.9375rem" role="status" testId="delete-loading"
+                      else if failed(experiments)
+                        column background-color="surface.card" border="1px solid var(--warning)" border-radius=12 padding=16 gap=10 testId="delete-failed"
+                          text "Experiments could not be read" font-size="1.0625rem" font-weight=800
+                          text loadError font-size="0.875rem" line-height="1.25rem"
+                          button press=reload testId="delete-retry" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+                            text "Try again" font-weight=800 font-size="0.875rem"
+                      else if experiments.length == 0
+                        text "There are no saved experiments to remove." font-size="0.9375rem" line-height="1.375rem" testId="delete-empty"
+                      else
+                        for x in experiments key=x.id
+                          row gap=10 flex-wrap="wrap" align-items="center" background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=12 testId=`delete-row-${x.id}`
+                            column flex-grow=1 flex-basis="12rem" min-width=0 gap=2
+                              text x.title font-size="0.9375rem" font-weight=800
+                              text x.meta font-size="0.75rem" line-height="1.125rem"
+                            button press=askDelete(x.id, x.title) disabled=pending(removed) aria-label=`Delete ${x.title}` testId=`delete-${x.id}` background-color="danger" color="ink.on-danger" border-radius=999 width=44 height=44 box-sizing="border-box" padding=0 display="flex" align-items="center" justify-content="center" flex-shrink=0
+                              image "symbol:close" width=24 height=24 object-fit="contain"
+                      if removedError != ""
+                        text removedError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="delete-error" role="alert"
+                      button press=done testId="delete-done" border="1px solid var(--brand)" border-radius=14 min-height=44 padding="0 1rem" max-width="100%" box-sizing="border-box"
+                        text "Done" font-weight=800 font-size="0.875rem"
+                else if e.name == "info"
+                  header
+                    text "App info" role="heading" aria-level=1 -exact-fit="shrink"
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    column padding=20 gap=16 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "SETTINGS" font-size="0.8125rem" font-weight=800
+                        link href="/info/delete" testId="delete-experiments" border="1px solid var(--danger)" border-radius=14 min-height="3.25rem" padding="0.5rem 1rem" display="flex" align-items="center" justify-content="center" max-width="100%" box-sizing="border-box"
+                          text "Delete experiments" color="ink" font-weight=800 font-size="0.875rem" -exact-fit="shrink"
+                        button press=askReset disabled=pending(resetDone) testId="reset-app" border="1px solid var(--secondary)" border-radius=14 min-height="3.25rem" padding="0.5rem 1rem" max-width="100%" box-sizing="border-box"
+                          text (pending(resetDone) ? "Resetting..." : "Reset app") font-weight=800 font-size="0.875rem" -exact-fit="shrink"
+                        if resetError != ""
+                          text resetError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="reset-error" role="alert"
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "ABOUT" font-size="0.8125rem" font-weight=800
+                        InfoRow(title="About Experimemo", body="Experimemo helps you capture experiment setup, observations, notes, and photos without slowing the work down.", url="", testId="row-about")
+                        InfoRow(title="Support", body="Visit the support page for release notes, contact details, and help.", url="https://davidjgrimsley.com/experimemo/support", testId="row-support")
+                        InfoRow(title="Developer", body="Built by David Grimsley for fast experiment tracking in the lab, classroom, or field.", url="", testId="row-developer")
+                        button press=openSite testId="open-website" aria-label="DavidJGrimsley.com" background-color="secondary" color="ink.on-secondary" border-radius=14 min-height="3rem" padding="0.5rem 1rem" font-weight=800 font-size="0.875rem"
+                          text "DavidJGrimsley.com" -exact-fit="shrink"
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "FEEDBACK" font-size="0.8125rem" font-weight=800
+                        InfoRow(title="How to send feedback", body="Share feedback by opening a GitHub issue with what you tried, what happened, and what you expected.", url="", testId="row-feedback")
+                        InfoRow(title="GitHub repository", body="Open the GitHub repository for updates, issues, ideas, and feature requests.", url="https://github.com/DavidJGrimsley/Experimemo", testId="row-github")
+                        InfoRow(title="Terms of service", body="Read the current terms that apply when using Experimemo.", url="https://davidjgrimsley.com/experimemo/terms", testId="row-terms")
+                        InfoRow(title="Privacy policy", body="Review how Experimemo handles data and privacy.", url="https://davidjgrimsley.com/experimemo/privacy", testId="row-privacy")
+                else if e.name == "onboarding"
+                  header
+                    text "Onboarding" role="heading" aria-level=1 -exact-fit="shrink"
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    column padding=20 gap=14 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
+                      column gap=8
+                        text "Before you begin" role="heading" aria-level=2 font-size="1.75rem" font-weight=800 line-height=1.4 -exact-fit="shrink"
+                        text "Review the privacy policy and terms of service, then continue once both are accepted." font-size="0.9375rem" line-height="1.375rem"
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "Privacy policy" font-size="1.0625rem" font-weight=800
+                        text "Read how Experimemo handles local experiment data, attached photos, and support requests." font-size="0.875rem" line-height="1.25rem"
+                        row gap=12 flex-wrap="wrap" align-items="center" justify-content="space-between"
+                          button press=openPrivacy testId="open-privacy" aria-label="Open policy" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" font-weight=800 font-size="0.875rem"
+                            text "Open policy" -exact-fit="shrink"
+                          row gap=8 flex-wrap="wrap" align-items="center" min-width=0
+                            text "Accepted" font-size="0.875rem" font-weight=700
+                            input type="checkbox" switch checked=acceptedPrivacy change=setPrivacy aria-label="Accept privacy policy" testId="accept-privacy"
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "Terms of service" font-size="1.0625rem" font-weight=800
+                        text "Review the live terms before you start saving and updating experiment records." font-size="0.875rem" line-height="1.25rem"
+                        row gap=12 flex-wrap="wrap" align-items="center" justify-content="space-between"
+                          button press=openTerms testId="open-terms" aria-label="Open terms" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" font-weight=800 font-size="0.875rem"
+                            text "Open terms" -exact-fit="shrink"
+                          row gap=8 flex-wrap="wrap" align-items="center" min-width=0
+                            text "Accepted" font-size="0.875rem" font-weight=700
+                            input type="checkbox" switch checked=acceptedTerms change=setTerms aria-label="Accept terms of service" testId="accept-terms"
+                      if acceptedPrivacy and acceptedTerms
+                        link href="/onboarding/account-setup" testId="continue" background-color="brand" color="ink.on-brand" border-radius=12 min-height="3rem" padding="0.75rem 1rem" font-weight=800 align-self="flex-start" max-width="100%" box-sizing="border-box"
+                          text "Continue"
+                      else
+                        button testId="continue-disabled" aria-label="Continue" aria-disabled=true background-color="surface.card" border-radius=12 min-height="3rem" padding="0.75rem 1rem" opacity=0.7 align-self="flex-start"
+                          text "Continue" font-weight=800
+                else if e.name == "ready"
+                  header
+                    text "Account Setup" role="heading" aria-level=1 -exact-fit="shrink"
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    column padding=20 gap=14 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
+                      text "You are ready to start" role="heading" aria-level=2 font-size="1.75rem" font-weight=800 line-height=1.4 -exact-fit="shrink"
+                      text "Head back into the app to begin creating and tracking your experiments." font-size="0.9375rem" line-height="1.375rem"
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "Next step" font-size="1.0625rem" font-weight=800
+                        text "Create a new experiment or open Track to keep working on something you already saved." font-size="0.875rem" line-height="1.25rem"
+                      link href="/" testId="open-experiments" background-color="brand" color="ink.on-brand" border-radius=12 min-height="3rem" padding="0.75rem 1rem" font-weight=800 align-self="flex-start" max-width="100%" box-sizing="border-box"
+                        text "Open experiments" -exact-fit="shrink"
+                else if e.name == "experiment"
+                  header
+                    button id="back" press=done aria-label="Back to Track" testId="editor-back"
+                      text "Track"
+                    text (match first(experiments.filter(x => x.id == e.params.id)) { case some(x) => x.title, case none => (pending(experiments) ? "Loading…" : "Not found") }) role="heading" aria-level=1 testId="editor-title" white-space="nowrap" text-overflow="ellipsis" overflow="hidden"
+                  if pending(experiments)
+                    column padding=20 testId="editor-loading"
+                      text "Loading experiment…" font-size="0.9375rem"
+                  else if failed(experiments)
+                    column padding=20 gap=12 testId="editor-failed"
+                      text "This experiment could not be read from storage." font-size="0.9375rem" font-weight=800
+                      text loadError font-size="0.8125rem" line-height="1.25rem" testId="editor-failed-detail"
+                      button press=reload testId="editor-retry" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+                        text "Try again" font-weight=800 font-size="0.875rem"
+                  else if experiments.filter(x => x.id == e.params.id).length == 0
+                    column padding=20 gap=12 testId="editor-missing"
+                      text "This experiment does not exist" font-size="1.75rem" font-weight=800 line-height=1.4 -exact-fit="shrink"
+                      text "It may have been deleted. Head back to Track to see your experiments." font-size="0.9375rem" line-height="1.375rem"
+                      link href="/track" testId="editor-missing-track" background-color="brand" color="ink.on-brand" border-radius=12 min-height="3rem" padding="0.75rem 1rem" font-weight=800 align-self="flex-start" max-width="100%" box-sizing="border-box"
+                        text "Back to Track"
+                  else
+                    for x in experiments.filter(r => r.id == e.params.id) key=x.id
+                      ExperimentEditor(route=e.id, x=x, fieldDrafts=fieldDrafts, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, draft=(match first(noteDrafts.filter(d => d.expId == x.id)) { case some(d) => d.notes, case none => "" }), editDraft=editDraft, addResult=addResult, adding=pending(resultAdded), addError=addError, editResult=editResultDraft, retryResult=retryResult, resultDrafts=resultDrafts, askDeleteResult=askDeleteResult, removeResultError=removeResultError, resultBusy=pending(resultEdited) or pending(resultRemoved), draftPhotos=draftPhotoSets.filter(d => d.owner == x.id).map(d => d.photo), askPhotos=askPhotos, removePhoto=removePhotoFrom, photoNote=photoNote, photoNoteKey=photoNoteKey, photoBusy=photoBusy, hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
+                else if e.name == "track"
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    column padding=20 gap=20 width="100%" box-sizing="border-box"
+                      header appearance="none" display="flex" flex-direction="column" gap=8
+                        row width="100%" align-items="center" flex-wrap="wrap" gap=12
+                          text "Track experiments" role="heading" aria-level=1 font-size="1.75rem" font-weight=800 line-height=1.4 flex=(wide ? "1 1 0" : "1 1 12rem") min-width=0 -exact-fit="shrink"
+                          TopTabs(wide=wide, current="track", goNew=pickNew, goTrack=pickTrack)
+                          row flex=(wide ? "1 1 0" : "0 0 auto") justify-content="flex-end"
+                            link href="/info" aria-label="Open app info and settings" testId="info-track" min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
+                              image "symbol:info" font-size="1.375rem"
+                        text "Review every experiment in one place and reopen any record to keep adding observations, notes, and photos." font-size="0.9375rem" line-height="1.375rem"
+                      if pending(experiments)
+                        text "Loading experiments…" font-size="0.9375rem" testId="track-loading" role="status"
+                      else if failed(experiments)
+                        column background-color="surface.card" border="1px solid var(--warning)" border-radius=12 padding=16 gap=10 testId="track-failed"
+                          text "Experiments could not be read" font-size="1.0625rem" font-weight=800
+                          text loadError font-size="0.875rem" line-height="1.25rem" testId="track-failed-detail"
+                          button press=reload testId="track-retry" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+                            text "Try again" font-weight=800 font-size="0.875rem"
+                      else if experiments.length == 0
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="track-empty"
+                          text "No experiments yet" font-size="1.0625rem" font-weight=800 -exact-fit="shrink"
+                          text "Create your first experiment to start recording your process and results." font-size="0.875rem" line-height="1.25rem"
+                          button press=pickNew testId="create-experiment" background-color="brand" color="ink.on-brand" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start" max-width="100%" box-sizing="border-box"
+                            text "Create experiment" font-weight=800 font-size="0.875rem" -exact-fit="shrink"
+                      else
+                        if experiments.filter(x => not x.complete).length > 0
+                          column gap=10 testId="section-active"
+                            text "ACTIVE" font-size="0.8125rem" font-weight=800
+                            column gap=12
+                              for x in experiments.filter(r => not r.complete) key=x.id
+                                ExperimentCard(x=x)
+                        if experiments.filter(x => x.complete).length > 0
+                          column gap=10 testId="section-completed"
+                            text "COMPLETED" font-size="0.8125rem" font-weight=800
+                            column gap=12
+                              for x in experiments.filter(r => r.complete) key=x.id
+                                ExperimentCard(x=x)
+                else
+                  scroll id=`content-${e.id}` flex=1 min-height=0
+                    column padding=20 gap=16 width="100%" box-sizing="border-box"
+                      header appearance="none" display="flex" flex-direction="column" gap=8
+                        row width="100%" align-items="center" flex-wrap="wrap" gap=12
+                          text "Experimemo" role="heading" aria-level=1 font-family="Yellowtail" font-size="2rem" font-weight=400 line-height=1.6 flex=(wide ? "1 1 0" : "1 1 12rem") min-width=0 -exact-fit="shrink"
+                          TopTabs(wide=wide, current="new", goNew=pickNew, goTrack=pickTrack)
+                          row flex=(wide ? "1 1 0" : "0 0 auto") justify-content="flex-end"
+                            link href="/info" aria-label="Open app info and settings" testId="info-new" min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0 border="1px solid var(--brand)" border-radius=999 background-color="surface.card" display="flex" align-items="center" justify-content="center"
+                              image "symbol:info" font-size="1.375rem"
+                        text "Create a new experiment plan now, then update observations, results, notes, and photos as it unfolds." font-size="0.9375rem" line-height="1.375rem"
+                      column gap=12
+                        column background-color="surface.card" border=(titleError == "" ? "1px solid var(--brand)" : "1px solid var(--warning)") border-radius=12 padding=16 gap=8
+                          text "Experiment title" font-size="0.9375rem" font-weight=800
+                          input value=title input=editTitle placeholder="Plant growth with indirect sunlight" aria-label="Experiment title" aria-invalid=(titleError != "") testId="field-title" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
+                          if titleError != ""
+                            text titleError color="warning" font-size="0.8125rem" font-weight=700 testId="error-title"
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+                          text "Category" font-size="0.9375rem" font-weight=800
+                          input value=category input=editCategory placeholder="Botany, Chemistry, Physics" aria-label="Category" testId="field-category" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
+                        column background-color="surface.card" border=(hypothesisError == "" ? "1px solid var(--brand)" : "1px solid var(--warning)") border-radius=12 padding=16 gap=8
+                          text "Hypothesis" font-size="0.9375rem" font-weight=800
+                          textarea value=hypothesis input=editHypothesis placeholder="What do you expect to happen?" aria-label="Hypothesis" aria-invalid=(hypothesisError != "") testId="field-hypothesis" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+                          if hypothesisError != ""
+                            text hypothesisError color="warning" font-size="0.8125rem" font-weight=700 testId="error-hypothesis"
+                        column background-color="surface.card" border=(procedureError == "" ? "1px solid var(--brand)" : "1px solid var(--warning)") border-radius=12 padding=16 gap=8
+                          text "Procedure" font-size="0.9375rem" font-weight=800
+                          textarea value=procedure input=editProcedure placeholder="List the setup, materials, and repeatable steps." aria-label="Procedure" aria-invalid=(procedureError != "") testId="field-procedure" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+                          if procedureError != ""
+                            text procedureError color="warning" font-size="0.8125rem" font-weight=700 testId="error-procedure"
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+                          text "Data collection plan" font-size="0.9375rem" font-weight=800
+                          textarea value=dataPlan input=editDataPlan placeholder="What measurements, photos, and observations will you capture?" aria-label="Data collection plan" testId="field-dataplan" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+                          text "Observations" font-size="0.9375rem" font-weight=800 -exact-fit="shrink"
+                          textarea value=observations input=editObservations placeholder="You can leave this blank until you start recording observations." aria-label="Observations" testId="field-observations" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+                          text "Field notes" font-size="0.9375rem" font-weight=800
+                          textarea value=fieldNotes input=editFieldNotes placeholder="Capture reminders, context, or setup details." aria-label="Field notes" testId="field-notes" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+                          text "Conclusion" font-size="0.9375rem" font-weight=800
+                          textarea value=conclusion input=editConclusion placeholder="Summarize what the experiment shows when you are ready." aria-label="Conclusion" testId="field-conclusion" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+                        column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+                          text "Planned photo count" font-size="0.9375rem" font-weight=800
+                          input value=planned input=editPlanned inputmode="numeric" placeholder="0" aria-label="Planned photo count" testId="field-planned" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "Photos" font-size="1.0625rem" font-weight=800
+                        text "Add photos now or attach them later from the experiment record." font-size="0.875rem" line-height="1.25rem"
+                        button press=askPhotos("new", "", "") disabled=photoBusy testId="new-add-photos" aria-label="Add photos" border="1px solid var(--brand)" border-radius=999 min-height=44 padding="0 1rem" box-sizing="border-box" align-self="flex-start"
+                          text "Add photos" font-weight=800 font-size="0.875rem"
+                        PhotoGrid(photos=newPhotos, prefix="new", remove=removeNewPhoto, busy=false)
+                        if photoNoteKey == "new" and photoNote != ""
+                          text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="new-photo-note" role="alert"
+                      column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
+                        text "Save and continue later" font-size="1.0625rem" font-weight=800
+                        text "Your experiment appears in Track right away so you can keep building it out whenever you need to." font-size="0.875rem" line-height="1.25rem"
+                        button press=save disabled=(pending(created) or photoBusy or pending(camShot) or camOpen) testId="save" aria-label="Save experiment" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem"
+                          text (pending(created) ? "Saving..." : "Save experiment")
+                        if createError != ""
+                          text createError color="warning" font-size="0.8125rem" font-weight=700 testId="create-error" role="alert"
+      dialog id="photo-source" role="alertdialog" aria-label="Add photos" cancel=sourceCancelled
+        text "Choose how to add experiment photos." testId="photo-source-text"
+        button press=chooseCamera commandfor="photo-source" command="close" testId="photo-source-camera"
+          text "Take Photo"
+        button press=chooseLibrary commandfor="photo-source" command="close" testId="photo-source-library"
+          text "Choose from Library"
+        button commandfor="photo-source" command="close" testId="photo-source-cancel"
+          text "Cancel"
+      dialog id="camera-dialog" aria-label="Take a photo" cancel=cameraDismissed closedby="none"
+        column gap=12 padding=16 width="100%" box-sizing="border-box"
+          text "Take a photo" font-size="1.0625rem" font-weight=800
+          if camOpenError != ""
+            text camOpenError color="warning" font-size="0.875rem" line-height="1.25rem" font-weight=700 testId="camera-error" role="alert"
+          else
+            if camTrack == ""
+              text "Opening the camera. Allow access if you are asked." font-size="0.875rem" testId="camera-opening"
+            else
+              exact-camera srcObject=camTrack object-fit="cover" width="100%" height=300 testId="viewfinder"
+          if shotErrorShown != ""
+            text shotErrorShown color="warning" font-size="0.875rem" line-height="1.25rem" font-weight=700 testId="camera-shot-error" role="alert"
+          row gap=12 flex-wrap="wrap"
+            button press=shutter disabled=(camTrack == "" or pending(camShot)) testId="camera-shutter" aria-label="Take photo" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem" padding="0.5rem 1rem"
+              text (pending(camShot) ? "Saving..." : "Take photo")
+            button press=closeCamera testId="camera-close" aria-label="Close camera" border="1px solid var(--brand)" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem" padding="0.5rem 1rem"
+              text "Close"
+      input type="file" accept="image/*" multiple=true id="photo-picker" testId="photo-picker" display="none" change=photosPicked cancel=photosCancelled
+      row role="tablist" display=(wide ? "none" : "flex")
+        button role="tab" aria-controls="panel-new" aria-selected=(nav.tab == "new") press=pick("new") testId="tab-new" flex=1
+          image "symbol:add"
+          text "New"
+        button role="tab" aria-controls="panel-track" aria-selected=(nav.tab == "track") press=pick("track") testId="tab-track" flex=1
+          image "symbol:package"
+          text "Track"
+      dialog id="delete-confirm" role="alertdialog" aria-label="Delete experiment?"
+        text `This will permanently remove "${aimedTitle}".` testId="delete-confirm-text"
+        button press=confirmDelete destructive=true commandfor="delete-confirm" command="close" testId="delete-confirm-yes"
+          text "Delete"
+        button commandfor="delete-confirm" command="close" testId="delete-confirm-cancel"
+          text "Cancel"
+      dialog id="result-delete-confirm" role="alertdialog" aria-label="Delete result?"
+        text "This will remove the result notes and photos from this record." testId="result-delete-text"
+        button press=confirmDeleteResult destructive=true commandfor="result-delete-confirm" command="close" testId="result-delete-yes"
+          text "Delete"
+        button commandfor="result-delete-confirm" command="close" testId="result-delete-cancel"
+          text "Cancel"
+      dialog id="reset-confirm" role="alertdialog" aria-label="Reset app data?"
+        text "This will permanently remove every experiment and leave the app empty." testId="reset-confirm-text"
+        button press=confirmReset destructive=true commandfor="reset-confirm" command="close" testId="reset-confirm-yes"
+          text "Reset"
+        button commandfor="reset-confirm" command="close" testId="reset-confirm-cancel"
+          text "Cancel"
+
+component InfoRow
+  props
+    title: string
+    body: string
+    url: string
+    testId: string
+  action open
+    openURL(url)
+  view
+    if url == ""
+      column gap=2 testId=testId
+        text title font-size="0.9375rem" font-weight=800
+        text body font-size="0.875rem" line-height="1.25rem"
+    else
+      button press=open testId=testId aria-label=title display="flex" flex-wrap="wrap" align-items="center" gap=8 text-align="left" padding="0.25rem 0"
+        column flex-grow=1 flex-basis="10rem" min-width=0 gap=2
+          text title font-size="0.9375rem" font-weight=800
+          text body font-size="0.875rem" line-height="1.25rem"
+        text "Open" font-size="0.8125rem" font-weight=800 color="ink"
+
+component ExperimentCard
+  props
+    x: Experiment
+  view
+    link href=path("experiment", x.id) testId=`card-${x.id}` aria-label=`${x.title}, ${x.badge}. Open experiment`
+      column background-color="surface.card" border=(x.complete ? "1px solid var(--secondary)" : "1px solid var(--brand)") border-radius=12 padding=16 gap=10 width="100%" box-sizing="border-box"
+        row gap=10 flex-wrap="wrap" align-items="flex-start"
+          column flex-grow=1 flex-basis="10rem" min-width=0 gap=4
+            text x.title font-size="1rem" font-weight=800
+            text x.meta font-size="0.75rem" line-height="1.125rem"
+          text x.badge testId=`badge-${x.id}` background-color=(x.complete ? "secondary" : "brand") color=(x.complete ? "ink.on-secondary" : "ink.on-brand") border-radius=999 padding="4px 10px" font-size="0.75rem" font-weight=800
+        column gap=4
+          text "Hypothesis" font-size="0.75rem" font-weight=800
+          text x.hypothesis font-size="0.875rem" line-height="1.25rem"
+          text "Observations" font-size="0.75rem" font-weight=800 -exact-fit="shrink"
+          text x.observations font-size="0.875rem" line-height="1.25rem"
+          text "Results" font-size="0.75rem" font-weight=800
+          text x.results font-size="0.875rem" line-height="1.25rem" testId=`results-${x.id}`
+        row gap=12 flex-wrap="wrap"
+          text x.plannedLabel font-size="0.75rem" font-weight=700
+          text x.conclusionLabel font-size="0.75rem" font-weight=700
+
+component ExperimentEditor
+  props
+    route: number
+    x: Experiment
+    fieldDrafts: FieldDraft[]
+    touch: action
+    retry: action
+    setStatus: action
+    saveError: string
+    savedId: string
+    draft: string
+    editDraft: action
+    addResult: action
+    adding: bool
+    addError: string
+    editResult: action
+    retryResult: action
+    resultDrafts: ResultDraft[]
+    askDeleteResult: action
+    removeResultError: string
+    resultBusy: bool
+    draftPhotos: Photo[]
+    askPhotos: action
+    removePhoto: action
+    photoNote: string
+    photoNoteKey: string
+    photoBusy: bool
+    hasPending: bool
+    saving: bool
+    statusBusy: bool
+    statusError: string
+  state title = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.title, case none => x.title }
+  state category = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.category, case none => x.category }
+  state hypothesis = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.hypothesis, case none => x.hypothesis }
+  state procedure = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.procedure, case none => x.procedure }
+  state dataPlan = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.dataPlan, case none => x.dataPlan }
+  state observations = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.observations, case none => x.observationsText }
+  state notes = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.notes, case none => x.notes }
+  state conclusion = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.conclusion, case none => x.conclusion }
+  state planned = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => `${d.planned}`, case none => `${x.planned}` }
+  state titleError = ""
+  state hypothesisError = ""
+  derive invalid = title.trim() == "" or hypothesis.trim() == ""
+  derive plannedNum = match parseNumber(planned) { case some(v) => (v < 0 ? 0 : round(v)), case none => 0 }
+  derive fieldError = match first(fieldDrafts.filter(d => d.id == x.id and d.failed)) { case some(d) => d.error, case none => "" }
+  derive saveFailed = fieldError != ""
+  action editTitle(v: string)
+    title = v
+    titleError = (v.trim() == "" ? "Give this experiment a name." : "")
+    touch(x.id, v, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, plannedNum)
+  action editCategory(v: string)
+    category = v
+    touch(x.id, title, v, hypothesis, procedure, dataPlan, observations, notes, conclusion, plannedNum)
+  action editHypothesis(v: string)
+    hypothesis = v
+    hypothesisError = (v.trim() == "" ? "Capture the question or expectation you are testing." : "")
+    touch(x.id, title, category, v, procedure, dataPlan, observations, notes, conclusion, plannedNum)
+  action editProcedure(v: string)
+    procedure = v
+    touch(x.id, title, category, hypothesis, v, dataPlan, observations, notes, conclusion, plannedNum)
+  action editDataPlan(v: string)
+    dataPlan = v
+    touch(x.id, title, category, hypothesis, procedure, v, observations, notes, conclusion, plannedNum)
+  action editObservations(v: string)
+    observations = v
+    touch(x.id, title, category, hypothesis, procedure, dataPlan, v, notes, conclusion, plannedNum)
+  action editNotes(v: string)
+    notes = v
+    touch(x.id, title, category, hypothesis, procedure, dataPlan, observations, v, conclusion, plannedNum)
+  action editConclusion(v: string)
+    conclusion = v
+    touch(x.id, title, category, hypothesis, procedure, dataPlan, observations, notes, v, plannedNum)
+  action addDraftPhotos
+    askPhotos("draft", x.id, "")
+  action dropDraftPhoto(photoId: string, uri: string)
+    removePhoto("draft", x.id, "", photoId, uri)
+  action addExpPhotos
+    askPhotos("experiment", x.id, "")
+  action dropExpPhoto(photoId: string, uri: string)
+    removePhoto("experiment", x.id, "", photoId, uri)
+  action addResultPhotos(resultId: string)
+    askPhotos("result", x.id, resultId)
+  action dropResultPhoto(resultId: string, photoId: string, uri: string)
+    removePhoto("result", x.id, resultId, photoId, uri)
+  action typeDraft(v: string)
+    editDraft(x.id, v)
+  action editPlanned(v: string)
+    planned = v
+    let n = match parseNumber(v) { case some(p) => (p < 0 ? 0 : round(p)), case none => 0 }
+    touch(x.id, title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, n)
+  view
+    column flex=1 min-height=0 display="flex" flex-direction="column"
+      scroll id=`content-${route}` flex=1 min-height=0
+        column padding=20 gap=16 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
+          column background-color="surface.card" border=(x.complete ? "1px solid var(--secondary)" : "1px solid var(--brand)") border-radius=12 padding=16 gap=10
+            row gap=10 flex-wrap="wrap" align-items="center" justify-content="space-between"
+              text x.badge testId="editor-status" role="status" background-color=(x.complete ? "secondary" : "brand") color=(x.complete ? "ink.on-secondary" : "ink.on-brand") border-radius=999 padding="4px 10px" font-size="0.75rem" font-weight=800
+              button press=setStatus(x.id, (x.complete ? "active" : "complete")) disabled=statusBusy testId="toggle-status" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" max-width="100%" box-sizing="border-box"
+                text (x.complete ? "Mark active" : "Mark complete") font-weight=800 font-size="0.875rem" -exact-fit="shrink"
+            text x.meta font-size="0.75rem" line-height="1.125rem" testId="editor-meta"
+            if statusError != ""
+              text statusError color="warning" font-size="0.8125rem" font-weight=700 testId="status-error" role="alert"
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Observations" font-size="0.9375rem" font-weight=800 -exact-fit="shrink"
+            textarea value=observations input=editObservations aria-label="Observations" testId="edit-observations" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Field notes" font-size="0.9375rem" font-weight=800
+            textarea value=notes input=editNotes aria-label="Field notes" testId="edit-notes" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Conclusion" font-size="0.9375rem" font-weight=800
+            textarea value=conclusion input=editConclusion aria-label="Conclusion" testId="edit-conclusion" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Planned photo count" font-size="0.9375rem" font-weight=800
+            input value=planned input=editPlanned inputmode="numeric" aria-label="Planned photo count" testId="edit-planned" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="results-card"
+            text "Results" role="heading" aria-level=3 font-size="1.0625rem" font-weight=800
+            text x.entryCount font-size="0.8125rem" font-weight=700 testId="result-count"
+            column gap=8
+              text "New result" font-size="0.9375rem" font-weight=800
+              textarea value=draft input=typeDraft aria-label="New result" testId="result-draft" rows=4 placeholder="Add result details." background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+              button press=addResult(x.id) disabled=(adding or (draft.trim() == "" and draftPhotos.length == 0)) testId="result-add" aria-label="Save result" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=44 box-sizing="border-box" font-weight=800 font-size="0.875rem" align-self="flex-start" padding="0 1rem"
+                text (adding ? "Saving..." : "Save result")
+              if addError != ""
+                text addError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="result-add-error" role="alert"
+              button press=addDraftPhotos disabled=photoBusy testId="draft-add-photos" aria-label="Add photos to the new result" border="1px solid var(--brand)" border-radius=999 min-height=44 padding="0 1rem" box-sizing="border-box" align-self="flex-start"
+                text "Add photos" font-weight=800 font-size="0.875rem"
+              PhotoGrid(photos=draftPhotos, prefix="draft", remove=dropDraftPhoto, busy=false)
+              if photoNoteKey == `draft-${x.id}` and photoNote != ""
+                text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="draft-photo-note" role="alert"
+            if removeResultError != ""
+              text removeResultError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="result-remove-error" role="alert"
+            for r in x.entries key=r.id
+              ResultEntry(expId=x.id, r=r, drafts=resultDrafts, edit=editResult, retry=retryResult, askDelete=askDeleteResult, busy=resultBusy, addPhotos=addResultPhotos, dropPhoto=dropResultPhoto, photoBusy=photoBusy, photoNote=(photoNoteKey == `result-${r.id}` ? photoNote : ""))
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="attached-photos"
+            text "Attached photos" font-size="1.0625rem" font-weight=800
+            text "Keep your reference photos with the experiment so everything stays easy to review later." font-size="0.875rem" line-height="1.25rem"
+            button press=addExpPhotos disabled=photoBusy testId="exp-add-photos" aria-label="Add photos to the experiment" border="1px solid var(--brand)" border-radius=999 min-height=44 padding="0 1rem" box-sizing="border-box" align-self="flex-start"
+              text "Add photos" font-weight=800 font-size="0.875rem"
+            PhotoGrid(photos=x.photoList, prefix="exp", remove=dropExpPhoto, busy=photoBusy)
+            if photoNoteKey == `exp-${x.id}` and photoNote != ""
+              text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="exp-photo-note" role="alert"
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=14 testId="experiment-details"
+            column gap=6
+              text "Experiment title" font-size="0.9375rem" font-weight=800
+              input value=title input=editTitle aria-label="Experiment title" aria-invalid=(titleError != "") testId="edit-title" background-color="surface.page" border-radius=14 padding="12px 14px" height=44
+              if titleError != ""
+                text titleError color="warning" font-size="0.8125rem" font-weight=700 testId="edit-error-title"
+            column gap=6
+              text "Category" font-size="0.9375rem" font-weight=800
+              input value=category input=editCategory aria-label="Category" testId="edit-category" background-color="surface.page" border-radius=14 padding="12px 14px" height=44
+            column gap=6
+              text "Hypothesis" font-size="0.9375rem" font-weight=800
+              textarea value=hypothesis input=editHypothesis aria-label="Hypothesis" aria-invalid=(hypothesisError != "") testId="edit-hypothesis" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
+              if hypothesisError != ""
+                text hypothesisError color="warning" font-size="0.8125rem" font-weight=700 testId="edit-error-hypothesis"
+            column gap=6
+              text "Procedure" font-size="0.9375rem" font-weight=800
+              textarea value=procedure input=editProcedure aria-label="Procedure" testId="edit-procedure" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
+            column gap=6
+              text "Data collection plan" font-size="0.9375rem" font-weight=800
+              textarea value=dataPlan input=editDataPlan aria-label="Data collection plan" testId="edit-dataplan" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
+          column gap=8 testId="autosave-status"
+            text "Changes save automatically a moment after you stop typing. Result notes save the same way, and a new result is saved when you add it; photos are added and removed on their own, straight away." font-size="0.875rem" line-height="1.25rem"
+            if hasPending or saving
+              text "Saving…" font-size="0.8125rem" font-weight=700 testId="save-pending" role="status"
+            else if invalid
+              text "Not saved yet: a title and a hypothesis are required." color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="save-invalid" role="status"
+            else if saveFailed
+              text `Not saved: ${fieldError}` color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="save-error" role="alert"
+              button press=retry(x.id) testId="retry-save" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start" max-width="100%" box-sizing="border-box"
+                text "Try saving again" font-weight=800 font-size="0.875rem" -exact-fit="shrink"
+            else if savedId == x.id
+              text "All changes saved." font-size="0.8125rem" font-weight=700 testId="save-ok" role="status"
+
+component ResultEntry
+  props
+    expId: string
+    r: ResultItem
+    drafts: ResultDraft[]
+    edit: action
+    retry: action
+    askDelete: action
+    busy: bool
+    addPhotos: action
+    dropPhoto: action
+    photoBusy: bool
+    photoNote: string
+  derive mine = drafts.filter(d => d.id == r.id)
+  derive waiting = mine.length > 0
+  derive text = match first(mine) { case some(d) => d.notes, case none => r.notes }
+  derive failed = mine.filter(d => d.failed).length > 0
+  derive error = match first(mine) { case some(d) => d.error, case none => "" }
+  action type(v: string)
+    edit(expId, r.id, v)
+  action again
+    retry(r.id)
+  action add
+    addPhotos(r.id)
+  action drop(photoId: string, uri: string)
+    dropPhoto(r.id, photoId, uri)
+  view
+    column background-color="surface.page" border-radius=12 padding=12 gap=8 testId=`result-${r.id}`
+      row gap=8 flex-wrap="wrap" align-items="center" justify-content="space-between"
+        text r.stamp font-size="0.8125rem" font-weight=800 testId=`result-stamp-${r.id}`
+        button press=askDelete(expId, r.id) disabled=busy aria-label=`Delete result from ${r.stamp}` testId=`result-delete-${r.id}` background-color="danger" color="ink.on-danger" border-radius=999 width=44 height=44 box-sizing="border-box" padding=0 display="flex" align-items="center" justify-content="center" flex-shrink=0
+          image "symbol:close" width=24 height=24 object-fit="contain"
+      textarea value=text input=type aria-label=`Result notes, ${r.stamp}` testId=`result-notes-${r.id}` rows=3 placeholder="Add result details." background-color="surface.card" border-radius=14 padding="12px 14px" height=96
+      PhotoGrid(photos=r.photoItems, prefix=`result-${r.id}`, remove=drop, busy=photoBusy)
+      if r.photos > 0
+        text `${r.photos} ${r.photos == 1 ? "photo" : "photos"} attached` font-size="0.8125rem" testId=`result-photos-${r.id}`
+      button press=add disabled=photoBusy testId=`result-add-photos-${r.id}` aria-label="Add photos to this result" border="1px solid var(--brand)" border-radius=999 min-height=44 padding="0 1rem" box-sizing="border-box" align-self="flex-start"
+        text "Add photos" font-weight=800 font-size="0.875rem"
+      if photoNote != ""
+        text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId=`result-photo-note-${r.id}` role="alert"
+      if failed
+        text `Not saved: ${error}` color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId=`result-error-${r.id}` role="alert"
+        button press=again testId=`result-retry-${r.id}` border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+          text "Try saving again" font-weight=800 font-size="0.875rem"
+      else if waiting
+        text "Saving…" font-size="0.8125rem" font-weight=700 testId=`result-saving-${r.id}` role="status"
+
+// On a wide window the reference draws its tabs as pills across the top of the page; the bar
+// below is then hidden, so each tab is reachable once.
+component TopTabs
+  props
+    wide: bool
+    current: string
+    goNew: action
+    goTrack: action
+  view
+    if wide
+      row role="tablist" gap=8 flex-shrink=0
+        button role="tab" aria-selected=(current == "new") press=goNew testId="tab-new" min-height="2.5rem" padding="0 1rem" border-radius=999 border=(current == "new" ? "1px solid var(--ink)" : "1px solid transparent") background-color=(current == "new" ? "surface.page" : "transparent") color=(current == "new" ? "brand" : "ink") font-weight=800 font-size="0.9375rem"
+          text "New"
+        button role="tab" aria-selected=(current == "track") press=goTrack testId="tab-track" min-height="2.5rem" padding="0 1rem" border-radius=999 border=(current == "track" ? "1px solid var(--ink)" : "1px solid transparent") background-color=(current == "track" ? "surface.page" : "transparent") color=(current == "track" ? "brand" : "ink") font-weight=800 font-size="0.9375rem"
+          text "Track"
+
+component PhotoGrid
+  props
+    photos: Photo[]
+    prefix: string
+    remove: action
+    busy: bool
+  view
+    if photos.length > 0
+      row gap=10 flex-wrap="wrap" testId=`photos-${prefix}`
+        for p in photos key=p.id
+          button press=remove(p.id, p.uri) disabled=busy aria-label=`Remove photo ${p.name}` testId=`photo-${p.id}` display="flex" flex-direction="column" align-items="center" gap=6 background-color="transparent" border-radius=12
+            image p.uri width=84 height=84 object-fit="cover" border-radius=12 border="1px solid var(--brand)" aria-label=`Photo ${p.name}`
+            text "Remove" font-size="0.75rem" font-weight=700
