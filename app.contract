@@ -616,11 +616,11 @@ component ExperimemoExact
                             column flex-grow=1 flex-basis="12rem" min-width=0 gap=2
                               text x.title font-size="0.9375rem" font-weight=800
                               text x.meta font-size="0.75rem" line-height="1.125rem"
-                            button press=askDelete(x.id, x.title) disabled=pending(removed) aria-label=`Delete ${x.title}` testId=`delete-${x.id}` background-color="danger" color="ink.on-danger" border-radius=999 min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0
-                              image "symbol:close"
+                            button press=askDelete(x.id, x.title) disabled=pending(removed) aria-label=`Delete ${x.title}` testId=`delete-${x.id}` background-color="danger" color="ink.on-danger" border-radius=999 width=44 height=44 box-sizing="border-box" padding=0 display="flex" align-items="center" justify-content="center" flex-shrink=0
+                              image "symbol:close" width=24 height=24 object-fit="contain"
                       if removedError != ""
                         text removedError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="delete-error" role="alert"
-                      button press=done testId="delete-done" border="1px solid var(--brand)" border-radius=14 min-height="3rem" padding="0.5rem 1rem" max-width="100%" box-sizing="border-box"
+                      button press=done testId="delete-done" border="1px solid var(--brand)" border-radius=14 min-height=44 padding="0 1rem" max-width="100%" box-sizing="border-box"
                         text "Done" font-weight=800 font-size="0.875rem"
                 else if e.name == "info"
                   header
@@ -801,7 +801,7 @@ component ExperimemoExact
                       column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
                         text "Photos" font-size="1.0625rem" font-weight=800
                         text "Add photos now or attach them later from the experiment record." font-size="0.875rem" line-height="1.25rem"
-                        button press=askPhotos("new", "", "") disabled=photoBusy testId="new-add-photos" aria-label="Add photos" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+                        button press=askPhotos("new", "", "") disabled=photoBusy testId="new-add-photos" aria-label="Add photos" border="1px solid var(--brand)" border-radius=999 min-height=44 padding="0 1rem" box-sizing="border-box" align-self="flex-start"
                           text "Add photos" font-weight=800 font-size="0.875rem"
                         PhotoGrid(photos=newPhotos, prefix="new", remove=removeNewPhoto, busy=false)
                         if photoNoteKey == "new" and photoNote != ""
@@ -1027,11 +1027,11 @@ component ExperimentEditor
             column gap=8
               text "New result" font-size="0.9375rem" font-weight=800
               textarea value=draft input=typeDraft aria-label="New result" testId="result-draft" rows=4 placeholder="Add result details." background-color="surface.page" border-radius=14 padding="12px 14px" height=112
-              button press=addResult(x.id) disabled=(adding or (draft.trim() == "" and draftPhotos.length == 0)) testId="result-add" aria-label="Save result" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem" align-self="flex-start" padding="0.5rem 1rem"
+              button press=addResult(x.id) disabled=(adding or (draft.trim() == "" and draftPhotos.length == 0)) testId="result-add" aria-label="Save result" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=44 box-sizing="border-box" font-weight=800 font-size="0.875rem" align-self="flex-start" padding="0 1rem"
                 text (adding ? "Saving..." : "Save result")
               if addError != ""
                 text addError color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="result-add-error" role="alert"
-              button press=addDraftPhotos disabled=photoBusy testId="draft-add-photos" aria-label="Add photos to the new result" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+              button press=addDraftPhotos disabled=photoBusy testId="draft-add-photos" aria-label="Add photos to the new result" border="1px solid var(--brand)" border-radius=999 min-height=44 padding="0 1rem" box-sizing="border-box" align-self="flex-start"
                 text "Add photos" font-weight=800 font-size="0.875rem"
               PhotoGrid(photos=draftPhotos, prefix="draft", remove=dropDraftPhoto, busy=false)
               if photoNoteKey == `draft-${x.id}` and photoNote != ""
@@ -1043,7 +1043,7 @@ component ExperimentEditor
           column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="attached-photos"
             text "Attached photos" font-size="1.0625rem" font-weight=800
             text "Keep your reference photos with the experiment so everything stays easy to review later." font-size="0.875rem" line-height="1.25rem"
-            button press=addExpPhotos disabled=photoBusy testId="exp-add-photos" aria-label="Add photos to the experiment" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+            button press=addExpPhotos disabled=photoBusy testId="exp-add-photos" aria-label="Add photos to the experiment" border="1px solid var(--brand)" border-radius=999 min-height=44 padding="0 1rem" box-sizing="border-box" align-self="flex-start"
               text "Add photos" font-weight=800 font-size="0.875rem"
             PhotoGrid(photos=x.photoList, prefix="exp", remove=dropExpPhoto, busy=photoBusy)
             if photoNoteKey == `exp-${x.id}` and photoNote != ""
@@ -1111,13 +1111,13 @@ component ResultEntry
     column background-color="surface.page" border-radius=12 padding=12 gap=8 testId=`result-${r.id}`
       row gap=8 flex-wrap="wrap" align-items="center" justify-content="space-between"
         text r.stamp font-size="0.8125rem" font-weight=800 testId=`result-stamp-${r.id}`
-        button press=askDelete(expId, r.id) disabled=busy aria-label=`Delete result from ${r.stamp}` testId=`result-delete-${r.id}` background-color="danger" color="ink.on-danger" border-radius=999 min-width="2.5rem" min-height="2.5rem" padding="0.5rem" flex-shrink=0
-          image "symbol:close"
+        button press=askDelete(expId, r.id) disabled=busy aria-label=`Delete result from ${r.stamp}` testId=`result-delete-${r.id}` background-color="danger" color="ink.on-danger" border-radius=999 width=44 height=44 box-sizing="border-box" padding=0 display="flex" align-items="center" justify-content="center" flex-shrink=0
+          image "symbol:close" width=24 height=24 object-fit="contain"
       textarea value=text input=type aria-label=`Result notes, ${r.stamp}` testId=`result-notes-${r.id}` rows=3 placeholder="Add result details." background-color="surface.card" border-radius=14 padding="12px 14px" height=96
       PhotoGrid(photos=r.photoItems, prefix=`result-${r.id}`, remove=drop, busy=photoBusy)
       if r.photos > 0
         text `${r.photos} ${r.photos == 1 ? "photo" : "photos"} attached` font-size="0.8125rem" testId=`result-photos-${r.id}`
-      button press=add disabled=photoBusy testId=`result-add-photos-${r.id}` aria-label="Add photos to this result" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
+      button press=add disabled=photoBusy testId=`result-add-photos-${r.id}` aria-label="Add photos to this result" border="1px solid var(--brand)" border-radius=999 min-height=44 padding="0 1rem" box-sizing="border-box" align-self="flex-start"
         text "Add photos" font-weight=800 font-size="0.875rem"
       if photoNote != ""
         text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId=`result-photo-note-${r.id}` role="alert"
