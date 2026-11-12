@@ -1010,6 +1010,18 @@ component ExperimentEditor
             text x.meta font-size="0.75rem" line-height="1.125rem" testId="editor-meta"
             if statusError != ""
               text statusError color="warning" font-size="0.8125rem" font-weight=700 testId="status-error" role="alert"
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Observations" font-size="0.9375rem" font-weight=800 -exact-fit="shrink"
+            textarea value=observations input=editObservations aria-label="Observations" testId="edit-observations" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Field notes" font-size="0.9375rem" font-weight=800
+            textarea value=notes input=editNotes aria-label="Field notes" testId="edit-notes" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Conclusion" font-size="0.9375rem" font-weight=800
+            textarea value=conclusion input=editConclusion aria-label="Conclusion" testId="edit-conclusion" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
+            text "Planned photo count" font-size="0.9375rem" font-weight=800
+            input value=planned input=editPlanned inputmode="numeric" aria-label="Planned photo count" testId="edit-planned" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
           column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="results-card"
             text "Results" role="heading" aria-level=3 font-size="1.0625rem" font-weight=800
             text x.entryCount font-size="0.8125rem" font-weight=700 testId="result-count"
@@ -1057,18 +1069,6 @@ component ExperimentEditor
             column gap=6
               text "Data collection plan" font-size="0.9375rem" font-weight=800
               textarea value=dataPlan input=editDataPlan aria-label="Data collection plan" testId="edit-dataplan" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
-            column gap=6
-              text "Observations" font-size="0.9375rem" font-weight=800 -exact-fit="shrink"
-              textarea value=observations input=editObservations aria-label="Observations" testId="edit-observations" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
-            column gap=6
-              text "Field notes" font-size="0.9375rem" font-weight=800
-              textarea value=notes input=editNotes aria-label="Field notes" testId="edit-notes" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
-            column gap=6
-              text "Conclusion" font-size="0.9375rem" font-weight=800
-              textarea value=conclusion input=editConclusion aria-label="Conclusion" testId="edit-conclusion" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
-            column gap=6
-              text "Planned photo count" font-size="0.9375rem" font-weight=800
-              input value=planned input=editPlanned inputmode="numeric" aria-label="Planned photo count" testId="edit-planned" background-color="surface.page" border-radius=14 padding="12px 14px" height=44
           column gap=8 testId="autosave-status"
             text "Changes save automatically a moment after you stop typing. Result notes save the same way, and a new result is saved when you add it; photos are added and removed on their own, straight away." font-size="0.875rem" line-height="1.25rem"
             if hasPending or saving
