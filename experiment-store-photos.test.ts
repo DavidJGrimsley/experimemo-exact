@@ -100,6 +100,28 @@ describe('attach and remove', () => {
     expect((await listExperiments(st(f)))[0].photoAssets).toEqual([]);
   });
 
+  test('a transient read-back failure does not delete an attached photo', async () => {
+    const f = fake();
+    await withRecord(f);
+    const originalWrite = f.fs.atomicWriteFile;
+    const originalRead = f.fs.readFile;
+    let failConfirmation = false;
+    f.fs.atomicWriteFile = async (path, data) => {
+      await originalWrite(path, data);
+      if (path.endsWith('experiments.json')) failConfirmation = true;
+    };
+    f.fs.readFile = async (path) => {
+      if (failConfirmation && path.endsWith('experiments.json')) {
+        failConfirmation = false;
+        throw Object.assign(new Error('temporary read failure'), { code: 'EIO' });
+      }
+      return originalRead(path);
+    };
+    await expect(attachPhotos({ experimentId: 'e1', resultId: '' }, produce(f, 'p1'), st(f), { now: NOW })).rejects.toThrow('temporary read failure');
+    expect(has(f, 'p1')).toBe(true);
+    expect((await listExperiments(st(f)))[0].photoAssets.map((p) => p.id)).toEqual(['p1']);
+  });
+
   test('removing a photo deletes its file, and an unknown photo is refused', async () => {
     const f = fake();
     await withRecord(f);

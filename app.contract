@@ -40,6 +40,21 @@ shape ResultDraft
   failed: bool
   error: string
 
+shape FieldDraft
+  id: string
+  title: string
+  category: string
+  hypothesis: string
+  procedure: string
+  dataPlan: string
+  observations: string
+  notes: string
+  conclusion: string
+  planned: number
+  version: number
+  failed: bool
+  error: string
+
 // A staged photo waiting in one experiment's new-result draft; it is that experiment's, wherever the person goes meanwhile.
 shape DraftPhoto
   owner: string
@@ -106,7 +121,7 @@ component ExperimemoExact
   resource camStatus = cameraStatus() as shape CameraStatus else empty()
   derive wide = viewport.width >= 900
   mutation created as shape Reply refreshes experiments then afterCreate
-  mutation saved as shape Reply refreshes experiments
+  mutation saved as shape Reply refreshes experiments then afterSave
   mutation statusSaved as shape Reply refreshes experiments
   mutation removed as shape Reply refreshes experiments then afterRemove
   mutation staged as shape PhotoReply then afterStage
@@ -120,24 +135,17 @@ component ExperimemoExact
   mutation dropped as shape PhotoReply
   mutation resultAdded as shape Reply refreshes experiments then afterResultAdd
   mutation resultEdited as shape Reply refreshes experiments then afterResultEdit
-  mutation resultRemoved as shape Reply refreshes experiments
+  mutation resultRemoved as shape Reply refreshes experiments then afterResultRemove
   mutation resetDone as shape Reply refreshes experiments then afterReset
   // The editor's latest valid draft, waiting out its 600 ms (hasPending), kept until a reply says it is stored.
-  state hasPending = false
   state autoKey = 0
-  state pId = ""
-  state pTitle = ""
-  state pCategory = ""
-  state pHypothesis = ""
-  state pProcedure = ""
-  state pDataPlan = ""
-  state pObservations = ""
-  state pNotes = ""
-  state pConclusion = ""
-  state pPlanned = 0
+  state fieldDrafts: FieldDraft[] = []
+  state sentFieldId = ""
+  state sentFieldVersion = 0
   state aimedId = ""
   state aimedResultExp = ""
   state aimedResultId = ""
+  state removingResultId = ""
   state resultDrafts: ResultDraft[] = []
   state resultKey = 0
   state sentResultId = ""
@@ -171,6 +179,7 @@ component ExperimemoExact
   // destination it was taken for, so one that lands after its sheet closed is thrown away, never filed elsewhere.
   state camSession = 0
   state shotSession = 0
+  state shotResets = 0
   state shotScope = ""
   state shotExp = ""
   state shotResult = ""
@@ -221,6 +230,7 @@ component ExperimemoExact
   derive nextResultNotes = match first(resultDrafts.filter(d => not d.failed)) { case some(d) => d.notes, case none => "" }
   derive removeResultError = match resultRemoved { case some(r) => r.error, case none => "" }
   derive statusError = match statusSaved { case some(r) => r.error, case none => "" }
+  derive hasPending = fieldDrafts.filter(d => not d.failed and d.title.trim() != "" and d.hypothesis.trim() != "").length > 0
   task autosave when hasPending key=autoKey
     after(600, flushAutosave)
   // Result notes autosave like the other fields: 600 ms after the last edit, one result at a time.
@@ -236,13 +246,14 @@ component ExperimemoExact
   action confirmDelete
     if not pending(removed)
       removingId = aimedId
-      resultDrafts = resultDrafts.filter(d => d.expId != aimedId)
       send removed = deleteExperimentRecord(aimedId)
   // Once the record is gone, its new-result draft goes too: the staged photos' files are removed, and a
   // staging for it still in flight is thrown away when it lands (goneExps). A refused delete keeps the draft.
   action afterRemove
     if removedError == "" and not failed(removed)
       goneExps = goneExps.concat([removingId])
+      resultDrafts = resultDrafts.filter(d => d.expId != removingId)
+      fieldDrafts = fieldDrafts.filter(d => d.id != removingId)
       let leftover = draftPhotoSets.filter(d => d.owner == removingId).map(d => d.photo.uri)
       draftPhotoSets = draftPhotoSets.filter(d => d.owner != removingId)
       noteDrafts = noteDrafts.filter(d => d.expId != removingId)
@@ -258,6 +269,9 @@ component ExperimemoExact
     if resetError == "" and not failed(resetDone)
       // Every result draft belonged to a record now gone: its staged files go, and a staging in flight is thrown away.
       resets = resets + 1
+      newPhotos = []
+      resultDrafts = []
+      fieldDrafts = []
       let leftover = draftPhotoSets.map(d => d.photo.uri)
       draftPhotoSets = []
       noteDrafts = []
@@ -267,32 +281,34 @@ component ExperimemoExact
       let fromInfo = top(fromDelete).name == "info" ? back(fromDelete) : fromDelete
       nav = select(fromInfo, "track")
   action reload
+    refresh experiments
   // The editor reports each edit with the whole draft; only a valid one is armed for saving,
   // and each edit restarts the 600 ms. Nothing is sent on open.
   action touch(id: string, title: string, category: string, hypothesis: string, procedure: string, dataPlan: string, observations: string, notes: string, conclusion: string, planned: number)
-    pId = id
-    pTitle = title
-    pCategory = category
-    pHypothesis = hypothesis
-    pProcedure = procedure
-    pDataPlan = dataPlan
-    pObservations = observations
-    pNotes = notes
-    pConclusion = conclusion
-    pPlanned = planned
-    hasPending = title.trim() != "" and hypothesis.trim() != ""
-    autoKey = autoKey + 1
+    let next = autoKey + 1
+    autoKey = next
+    fieldDrafts = fieldDrafts.filter(d => d.id != id).concat([FieldDraft(id=id, title=title, category=category, hypothesis=hypothesis, procedure=procedure, dataPlan=dataPlan, observations=observations, notes=notes, conclusion=conclusion, planned=planned, version=next, failed=false, error="")])
   // A save already in flight is waited out: the timer is armed again instead of overlapping it.
   action flushAutosave
     if hasPending
       if pending(saved)
         autoKey = autoKey + 1
       else
-        hasPending = false
-        let at = time.epochAtZero + performanceNow()
-        send saved = saveExperimentRecord(pId, at, pTitle, pCategory, pHypothesis, pProcedure, pDataPlan, pObservations, pNotes, pConclusion, pPlanned)
-  action retrySave
-    hasPending = pTitle.trim() != "" and pHypothesis.trim() != ""
+        match first(fieldDrafts.filter(d => not d.failed and d.title.trim() != "" and d.hypothesis.trim() != ""))
+          case some(d)
+            let at = time.epochAtZero + performanceNow()
+            sentFieldId = d.id
+            sentFieldVersion = d.version
+            send saved = saveExperimentRecord(d.id, at, d.title, d.category, d.hypothesis, d.procedure, d.dataPlan, d.observations, d.notes, d.conclusion, d.planned)
+          case none
+  action afterSave
+    if savedError == "" and not failed(saved)
+      fieldDrafts = fieldDrafts.filter(d => not (d.id == sentFieldId and d.version == sentFieldVersion))
+    else
+      fieldDrafts = fieldDrafts.map(d => (d.id == sentFieldId and d.version == sentFieldVersion) ? FieldDraft(id=d.id, title=d.title, category=d.category, hypothesis=d.hypothesis, procedure=d.procedure, dataPlan=d.dataPlan, observations=d.observations, notes=d.notes, conclusion=d.conclusion, planned=d.planned, version=d.version, failed=true, error=(savedError == "" ? "Could not save these changes." : savedError)) : d)
+    autoKey = autoKey + 1
+  action retrySave(id: string)
+    fieldDrafts = fieldDrafts.map(d => d.id == id ? FieldDraft(id=d.id, title=d.title, category=d.category, hypothesis=d.hypothesis, procedure=d.procedure, dataPlan=d.dataPlan, observations=d.observations, notes=d.notes, conclusion=d.conclusion, planned=d.planned, version=d.version, failed=false, error="") : d)
     autoKey = autoKey + 1
     refresh experiments
   // Result entries are stored at once, one at a time; the timestamp is taken here, never typed.
@@ -346,9 +362,12 @@ component ExperimemoExact
     showModal("result-delete-confirm")
   action confirmDeleteResult
     if not pending(resultRemoved)
-      resultDrafts = resultDrafts.filter(d => d.id != aimedResultId)
+      removingResultId = aimedResultId
       let at = time.epochAtZero + performanceNow()
       send resultRemoved = removeResultRecord(aimedResultExp, aimedResultId, at)
+  action afterResultRemove
+    if removeResultError == "" and not failed(resultRemoved)
+      resultDrafts = resultDrafts.filter(d => d.id != removingResultId)
   // Photos: one hidden file input for the whole app; askPhotos says where the chosen files go.
   // New and a result draft keep theirs staged (copied, referenced by nothing) until Save; an
   // experiment or result already stored takes them at once.
@@ -407,6 +426,7 @@ component ExperimemoExact
       let n = photoMade + 1
       photoMade = n
       shotSession = camSession
+      shotResets = resets
       shotScope = pickScope
       shotExp = pickExp
       shotResult = pickResult
@@ -415,7 +435,7 @@ component ExperimemoExact
   // stale: its file is removed and nothing else changes; the open sheet, if any, is left alone.
   action afterShot
     if camShotError == "" and not failed(camShot)
-      if shotSession != camSession or not camOpen
+      if shotSession != camSession or shotResets != resets or not camOpen
         send camDropped = discardCameraShot(shotPath)
       else if photoBusy
         send camDropped = discardCameraShot(shotPath)
@@ -458,9 +478,11 @@ component ExperimemoExact
     match job
       case some(j)
         if stagedError == "" and not failed(staged)
-          if j.owner == "new"
+          if j.resets != resets
+            send dropped = discardPhotoFiles(stagedPhotos.map(p => p.uri))
+          else if j.owner == "new"
             newPhotos = newPhotos.concat(stagedPhotos)
-          else if j.resets != resets or goneExps.includes(j.owner)
+          else if goneExps.includes(j.owner)
             send dropped = discardPhotoFiles(stagedPhotos.map(p => p.uri))
           else
             draftPhotoSets = draftPhotoSets.concat(stagedPhotos.map(p => DraftPhoto(owner=j.owner, photo=p)))
@@ -538,7 +560,7 @@ component ExperimemoExact
     hypothesisError = (hypothesis.trim() == "" ? "Capture the question or expectation you are testing." : "")
     procedureError = (procedure.trim() == "" ? "Add the repeatable steps before saving." : "")
     createError = ""
-    if title.trim() != "" and hypothesis.trim() != "" and procedure.trim() != "" and not pending(created) and not pending(time)
+    if title.trim() != "" and hypothesis.trim() != "" and procedure.trim() != "" and not pending(created) and not pending(time) and not photoBusy and not pending(camShot) and not camOpen
       let at = time.epochAtZero + performanceNow()
       send created = createExperimentRecord(`experiment-${at}-${made}`, at, title, category, hypothesis, procedure, dataPlan, observations, fieldNotes, conclusion, plannedNum, newPhotos)
       made = made + 1
@@ -692,7 +714,7 @@ component ExperimemoExact
                         text "Back to Track"
                   else
                     for x in experiments.filter(r => r.id == e.params.id) key=x.id
-                      ExperimentEditor(route=e.id, x=x, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, draft=(match first(noteDrafts.filter(d => d.expId == x.id)) { case some(d) => d.notes, case none => "" }), editDraft=editDraft, addResult=addResult, adding=pending(resultAdded), addError=addError, editResult=editResultDraft, retryResult=retryResult, resultDrafts=resultDrafts, askDeleteResult=askDeleteResult, removeResultError=removeResultError, resultBusy=pending(resultEdited) or pending(resultRemoved), draftPhotos=draftPhotoSets.filter(d => d.owner == x.id).map(d => d.photo), askPhotos=askPhotos, removePhoto=removePhotoFrom, photoNote=photoNote, photoNoteKey=photoNoteKey, photoBusy=photoBusy, hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
+                      ExperimentEditor(route=e.id, x=x, fieldDrafts=fieldDrafts, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, draft=(match first(noteDrafts.filter(d => d.expId == x.id)) { case some(d) => d.notes, case none => "" }), editDraft=editDraft, addResult=addResult, adding=pending(resultAdded), addError=addError, editResult=editResultDraft, retryResult=retryResult, resultDrafts=resultDrafts, askDeleteResult=askDeleteResult, removeResultError=removeResultError, resultBusy=pending(resultEdited) or pending(resultRemoved), draftPhotos=draftPhotoSets.filter(d => d.owner == x.id).map(d => d.photo), askPhotos=askPhotos, removePhoto=removePhotoFrom, photoNote=photoNote, photoNoteKey=photoNoteKey, photoBusy=photoBusy, hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
                 else if e.name == "track"
                   scroll id=`content-${e.id}` flex=1 min-height=0
                     column padding=20 gap=20 width="100%" box-sizing="border-box"
@@ -787,7 +809,7 @@ component ExperimemoExact
                       column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10
                         text "Save and continue later" font-size="1.0625rem" font-weight=800
                         text "Your experiment appears in Track right away so you can keep building it out whenever you need to." font-size="0.875rem" line-height="1.25rem"
-                        button press=save disabled=pending(created) testId="save" aria-label="Save experiment" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem"
+                        button press=save disabled=(pending(created) or photoBusy or pending(camShot) or camOpen) testId="save" aria-label="Save experiment" background-color="secondary" color="ink.on-secondary" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem"
                           text (pending(created) ? "Saving..." : "Save experiment")
                         if createError != ""
                           text createError color="warning" font-size="0.8125rem" font-weight=700 testId="create-error" role="alert"
@@ -889,6 +911,7 @@ component ExperimentEditor
   props
     route: number
     x: Experiment
+    fieldDrafts: FieldDraft[]
     touch: action
     retry: action
     setStatus: action
@@ -915,20 +938,21 @@ component ExperimentEditor
     saving: bool
     statusBusy: bool
     statusError: string
-  state title = x.title
-  state category = x.category
-  state hypothesis = x.hypothesis
-  state procedure = x.procedure
-  state dataPlan = x.dataPlan
-  state observations = x.observationsText
-  state notes = x.notes
-  state conclusion = x.conclusion
-  state planned = `${x.planned}`
+  state title = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.title, case none => x.title }
+  state category = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.category, case none => x.category }
+  state hypothesis = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.hypothesis, case none => x.hypothesis }
+  state procedure = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.procedure, case none => x.procedure }
+  state dataPlan = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.dataPlan, case none => x.dataPlan }
+  state observations = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.observations, case none => x.observationsText }
+  state notes = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.notes, case none => x.notes }
+  state conclusion = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => d.conclusion, case none => x.conclusion }
+  state planned = match first(fieldDrafts.filter(d => d.id == x.id)) { case some(d) => `${d.planned}`, case none => `${x.planned}` }
   state titleError = ""
   state hypothesisError = ""
   derive invalid = title.trim() == "" or hypothesis.trim() == ""
   derive plannedNum = match parseNumber(planned) { case some(v) => (v < 0 ? 0 : round(v)), case none => 0 }
-  derive saveFailed = savedId == x.id and saveError != ""
+  derive fieldError = match first(fieldDrafts.filter(d => d.id == x.id and d.failed)) { case some(d) => d.error, case none => "" }
+  derive saveFailed = fieldError != ""
   action editTitle(v: string)
     title = v
     titleError = (v.trim() == "" ? "Give this experiment a name." : "")
@@ -1052,8 +1076,8 @@ component ExperimentEditor
             else if invalid
               text "Not saved yet: a title and a hypothesis are required." color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="save-invalid" role="status"
             else if saveFailed
-              text `Not saved: ${saveError}` color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="save-error" role="alert"
-              button press=retry testId="retry-save" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start" max-width="100%" box-sizing="border-box"
+              text `Not saved: ${fieldError}` color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="save-error" role="alert"
+              button press=retry(x.id) testId="retry-save" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start" max-width="100%" box-sizing="border-box"
                 text "Try saving again" font-weight=800 font-size="0.875rem" -exact-fit="shrink"
             else if savedId == x.id
               text "All changes saved." font-size="0.8125rem" font-weight=700 testId="save-ok" role="status"

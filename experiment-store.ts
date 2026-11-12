@@ -538,7 +538,14 @@ export function attachPhotos(
       await write(storage, { ...state, experiments: state.experiments.map((e) => (e.id === record.id ? record : e)) });
       return clone(record);
     } catch (e) {
-      await removeFiles(storage, added.map((p) => p.uri), state);
+      // A successful write can be followed by a failed read-back. Only delete
+      // copies after a fresh read proves that the persisted state does not use them.
+      try {
+        const persisted = await read(storage);
+        if (persisted.bootstrapped) await removeFiles(storage, added.map((p) => p.uri), persisted);
+      } catch {
+        // An unknown write outcome must keep the files: they may be referenced.
+      }
       throw e;
     }
   });

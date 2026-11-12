@@ -37,6 +37,38 @@ test "editor Back returns to Track"
   clock settle
   expect tree has "card-experiment-seed-2"
 
+test "rapid edits to different experiments both autosave"
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  type "edit-title" "First pending edit"
+  tap "editor-back"
+  clock settle
+  tap "card-experiment-seed-2"
+  clock settle
+  type "edit-title" "Second pending edit"
+  tap "editor-back"
+  clock settle
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "edit-title" == "First pending edit"
+  clock +700
+  clock data
+  clock +700
+  clock data
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-1"
+  clock settle
+  expect text "editor-title" == "First pending edit"
+  tap "editor-back"
+  clock settle
+  tap "card-experiment-seed-2"
+  clock settle
+  expect text "editor-title" == "Second pending edit"
+
 test "a deep link opens the record, and a missing id says so"
   at "/experiment/experiment-seed-1"
   clock data
