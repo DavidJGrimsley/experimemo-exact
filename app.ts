@@ -329,6 +329,20 @@ const sources: Sources = {
     }
   },
 
+  // A draft's staged photos nobody wants any more (its record was deleted or reset, or the staging landed
+  // too late): each file goes unless a record has meanwhile taken it. One failure does not stop the rest.
+  discardPhotoFiles: async ([uris], _store, storage): Promise<Result<'discardPhotoFiles'>> => {
+    const errors: string[] = [];
+    for (const uri of uris) {
+      try {
+        await discardStagedPhoto(uri, files(storage));
+      } catch (e) {
+        errors.push(photoFailure(e));
+      }
+    }
+    return photoReply(errors.length === 0, '', errors.join(' '));
+  },
+
   deleteExperimentRecord: async ([id], _store, storage): Promise<Result<'deleteExperimentRecord'>> => {
     try {
       await deleteExperiment(id, files(storage));

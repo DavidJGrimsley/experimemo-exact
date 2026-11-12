@@ -28,15 +28,24 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${ok ? '' : `: ${detail}`}`);
 };
 
-// Counts camera opens and browser tracks stopped, so a closed sheet is shown to release the device.
+// Counts camera opens and browser tracks stopped, so a closed sheet is shown to release the device. Logs each
+// write and removal the page makes in the web host's file store (IndexedDB, in the page: only SQLite has a worker),
+// so a check can wait for a file to be written and removed rather than guess when that has happened.
 const count = () => {
   const gum = MediaDevices.prototype.getUserMedia, stop = MediaStreamTrack.prototype.stop;
   globalThis.__media = { opens: 0, stops: 0 };
   MediaDevices.prototype.getUserMedia = function (...a) { globalThis.__media.opens++; return gum.apply(this, a); };
   MediaStreamTrack.prototype.stop = function () { if (this.readyState === 'live') globalThis.__media.stops++; return stop.call(this); };
+  const put = IDBObjectStore.prototype.put, del = IDBObjectStore.prototype.delete;
+  globalThis.__fs = [];
+  IDBObjectStore.prototype.put = function (v, ...r) { if (this.name === 'files' && v?.path) globalThis.__fs.push(['put', String(v.path)]); return put.call(this, v, ...r); };
+  IDBObjectStore.prototype.delete = function (k, ...r) { if (this.name === 'files') globalThis.__fs.push(['delete', String(k)]); return del.call(this, k, ...r); };
 };
 const notFound = () => {
   navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('mock', 'NotFoundError'));
+};
+const permissionDenied = () => {
+  navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('mock', 'NotAllowedError'));
 };
 const noMediaDevices = () => {
   Object.defineProperty(navigator, 'mediaDevices', { value: undefined, configurable: true });
@@ -65,16 +74,42 @@ const storedFiles = (page, part) => page.evaluate(async (part) => {
   }
   return out;
 }, part);
-const noCameraTemps = (page) => page.waitForFunction(async () => {
+// No stored file's path holds `part` (waited for: a removal's transaction commits a moment after it is asked).
+const noFiles = (page, part) => page.waitForFunction(async (part) => {
   const req = (r) => new Promise((ok, no) => { r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
   for (const d of (await indexedDB.databases()).filter((d) => d.name?.startsWith('exact-storage:'))) {
     const db = await req(indexedDB.open(d.name));
     const keys = db.objectStoreNames.contains('files') ? await req(db.transaction('files').objectStore('files').getAllKeys()) : [];
     db.close();
-    if (keys.some((k) => String(k).includes('/tmp/camera/'))) return false;
+    if (keys.some((k) => String(k).includes(part))) return false;
   }
   return true;
-}, null, { timeout: 10000, polling: 250 }).then(() => true, () => false);
+}, part, { timeout: 10000, polling: 250 }).then(() => true, () => false);
+// `n` camera shots have been written under app:/tmp/camera since the page loaded and every one has been removed
+// again; then none is stored. Waits on the writes themselves, so it cannot pass before a late shot is written.
+const cameraSettled = async (page, n) => (await page.waitForFunction((n) => {
+  const shots = new Map();
+  for (const [op, k] of globalThis.__fs) if (k.includes('/tmp/camera/')) { if (op === 'put') shots.set(k, false); else if (shots.has(k)) shots.set(k, true); }
+  return shots.size >= n && [...shots.values()].every(Boolean);
+}, n, { timeout: 15000, polling: 100 }).then(() => true, () => false)) && noFiles(page, '/tmp/camera/');
+// Holds the web host's lock on app:/data/photos, so every photo copy (camera or library) waits: a staging is
+// delayed without changing the app. The host gives up on a lock after 10 s, so a hold stays shorter than that.
+const holdPhotos = (page) => page.evaluate(async () => {
+  const db = (await indexedDB.databases()).map((d) => d.name).find((n) => n?.startsWith('exact-storage:'));
+  await new Promise((held) => {
+    navigator.locks.request(`${db}:app:/data/photos`, { mode: 'exclusive' }, () => { held(); return new Promise((r) => { globalThis.__releasePhotos = r; }); });
+  });
+});
+const releasePhotos = (page) => page.evaluate(() => globalThis.__releasePhotos());
+// A staging is waiting on the held lock (its request is queued behind ours): the photo is really in flight.
+const stagingHeld = (page) => page.waitForFunction(async () => (await navigator.locks.query()).pending.some((l) => l.name.endsWith(':app:/data/photos')),
+  null, { timeout: 8000, polling: 100 }).then(() => true, () => false);
+// The staging has answered: nothing waits on the photos lock and the editor's photo buttons are enabled again.
+const stageLanded = (page) => page.waitForFunction(async () => {
+  const q = await navigator.locks.query();
+  const b = document.querySelector('[data-testid="exp-add-photos"]');
+  return ![...q.pending, ...q.held].some((l) => l.name.endsWith(':app:/data/photos')) && !!b && !b.disabled;
+}, null, { timeout: 10000, polling: 100 }).then(() => true, () => false);
 
 const executablePath = process.env.CHROME;
 const fake = ['--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'];
@@ -111,6 +146,19 @@ const shoot = async (page) => {
   }
 };
 const settle = (page) => page.waitForTimeout(600);
+const draftCount = (page) => page.locator('[data-testid="photos-draft"] [data-testid^="photo-photo-"]').count();
+const pageCount = (page) => page.locator('[data-testid^="photo-photo-"]').count();
+const resultCount = (page, label) => page.waitForFunction((label) => (document.querySelector('[data-testid="result-count"]')?.innerText ?? '') === label, label, { timeout: 10000 }).then(() => true, () => false);
+const openCard = async (page, id) => {
+  await page.getByTestId(`card-${id}`).click();
+  await page.getByTestId('editor-title').waitFor();
+};
+// Choose from Library, answered with the fixture through the browser's own file chooser.
+const pickLibrary = async (page, addId) => {
+  await page.getByTestId(addId).click();
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByTestId('photo-source-library').click()]);
+  await chooser.setFiles(join(import.meta.dir, 'fixtures/sample.png'));
+};
 const goTrackCard = async (page, title) => {
   await page.getByTestId('tab-track').or(page.getByRole('button', { name: 'Track' })).first().click();
   await page.getByText(title).first().click();
@@ -118,7 +166,6 @@ const goTrackCard = async (page, title) => {
 };
 
 const browser = await chromium.launch({ executablePath, headless: true, args: [...fake, '--use-fake-ui-for-media-stream'] });
-const denyBrowser = await chromium.launch({ executablePath, headless: true, args: [...fake, '--deny-permission-prompts'] });
 try {
   // --- granted, Chrome's fake capture device ---
   {
@@ -200,9 +247,17 @@ try {
       await page.getByTestId('exp-add-photos').click();
       await page.getByTestId('photo-source-camera').click();
       await sees(page, 'viewfinder');
-      await ready();
-      await page.getByTestId('camera-shutter').click();
-      await page.waitForFunction(() => globalThis.__shotHeld === true, null, { timeout: 10000 });
+      if (!(await ready())) throw new Error('The fake camera never displayed a frame.');
+      // A newly opened Chromium fake track can briefly remain muted even after the video has a frame.
+      // Retry an explicitly refused shot, but never treat it as the delayed shot we are testing.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await page.getByTestId('camera-shutter').click();
+        const held = await page.waitForFunction(() => globalThis.__shotHeld === true || !!document.querySelector('[data-testid="camera-shot-error"]'), null, { timeout: 10000 }).then(() => true, () => false);
+        if (held && await page.evaluate(() => globalThis.__shotHeld === true)) break;
+        if (attempt === 2) throw new Error('The fake camera refused the delayed shot.');
+        retries++;
+        await page.waitForTimeout(300);
+      }
       await page.getByTestId('camera-close').click();
       await gone(page, 'viewfinder');
     };
@@ -212,7 +267,7 @@ try {
     const sprouts = await expPhotos();
     await holdAndClose();
     await page.evaluate(() => globalThis.__releaseShot());
-    const cleaned = await noCameraTemps(page);
+    const cleaned = await cameraSettled(page, 1);
     await settle(page);
     check('a shot that lands after the camera closed attaches nothing and keeps the cancel note',
       (await expPhotos()) === sprouts && (await text(page, 'exp-photo-note')) === 'Photo capture cancelled. Nothing was changed.' && !(await sees(page, 'viewfinder', 500)),
@@ -230,7 +285,7 @@ try {
     await sees(page, 'viewfinder');
     const reopened = await ready();
     await page.evaluate(() => globalThis.__releaseShot());
-    const cleanedAgain = await noCameraTemps(page);
+    const cleanedAgain = await cameraSettled(page, 2);
     await settle(page);
     check('a late shot from the first record is not attached to the record the camera reopened for',
       reopened && (await expPhotos()) === cooling, `${await expPhotos()} photos, was ${cooling}`);
@@ -240,7 +295,7 @@ try {
     await shoot(page);
     check('the reopened camera\'s own shot attaches to its own record',
       await page.waitForFunction((n) => document.querySelectorAll('[data-testid="photos-exp"] [data-testid^="photo-photo-"]').length === n + 1, cooling, { timeout: 15000 }).then(() => true, () => false));
-    check('after its own shot no camera temporary file is left', await noCameraTemps(page), JSON.stringify(await storedFiles(page, '/tmp/camera/')));
+    check('after its own shot no camera temporary file is left', await cameraSettled(page, 3), JSON.stringify(await storedFiles(page, '/tmp/camera/')));
 
     await page.reload();
     await page.getByTestId('editor-title').waitFor();
@@ -256,14 +311,98 @@ try {
     await context.close();
   }
 
-  // --- the browser refuses the camera (Chromium's own denial) ---
+  // --- a library staging for one experiment's result draft, delayed until the person is in another (photo store held) ---
   {
-    const { context, page } = await open(denyBrowser);
+    const { context, page } = await open(browser);
+    await goTrackCard(page, 'Bean sprouts');
+    await holdPhotos(page);
+    await pickLibrary(page, 'draft-add-photos');
+    const held = await stagingHeld(page);
+    await page.goBack();
+    await openCard(page, 'experiment-seed-2');
+    await page.getByTestId('result-draft').fill('Cooling, typed while the photo saved');
+    await releasePhotos(page);
+    const landed = await stageLanded(page);
+    await settle(page);
+    check('library: the staging was in flight while the person moved to another experiment and typed', held && landed, `held ${held} landed ${landed}`);
+    check("library: the late staging does not join the other experiment's draft", (await draftCount(page)) === 0, `${await draftCount(page)} draft photos`);
+    await page.getByTestId('result-add').click();
+    check('library: Save result there stores its own notes and no photo',
+      (await resultCount(page, '1 timestamped entry')) && (await pageCount(page)) === 0
+      && (await page.getByTestId('result-draft').inputValue()) === ''
+      && (await page.evaluate(() => [...document.querySelectorAll('textarea')].some((t) => t.value === 'Cooling, typed while the photo saved'))));
+    await page.goBack();
+    await openCard(page, 'experiment-seed-1');
+    check('library: back in the first experiment, its draft holds the photo', (await draftCount(page)) === 1, `${await draftCount(page)} draft photos`);
+    await page.getByTestId('result-add').click();
+    check('library: Save result in the first experiment stores the photo with it',
+      (await resultCount(page, '2 timestamped entries')) && (await draftCount(page)) === 0 && /1 photo attached/.test(await page.locator('body').innerText()));
+    await page.reload();
+    await page.getByTestId('editor-title').waitFor();
+    const keptFirst = await page.waitForFunction(() => /1 photo attached/.test(document.body.innerText), null, { timeout: 10000 }).then(() => true, () => false);
+    await page.goBack();
+    await openCard(page, 'experiment-seed-2');
+    await settle(page);
+    check("library: after a reload the photo is the first experiment's alone", keptFirst && (await pageCount(page)) === 0 && (await resultCount(page, '1 timestamped entry')));
+    check('library: one durable photo file, the stored one', (await storedFiles(page, '/data/photos/')).length === 1, JSON.stringify(await storedFiles(page, '/data/photos/')));
+    await context.close();
+  }
+
+  // --- a camera staging for one experiment's draft, delayed while the person types in another; then that
+  //     experiment is deleted while a second staging for it is in flight (photo store held) ---
+  {
+    const { context, page } = await open(browser);
+    await goTrackCard(page, 'Bean sprouts');
+    await page.getByTestId('draft-add-photos').click();
+    await page.getByTestId('photo-source-camera').click();
+    await sees(page, 'viewfinder');
+    await page.waitForFunction(() => { const v = document.querySelector('[data-testid="viewfinder"] video'); return v && v.videoWidth > 0; }, null, { timeout: 10000 }).catch(() => {});
+    await holdPhotos(page);
+    await shoot(page);
+    const held = await stagingHeld(page);
+    await page.goBack();
+    await openCard(page, 'experiment-seed-2');
+    await page.getByTestId('result-draft').fill('Typed in the second experiment');
+    await releasePhotos(page);
+    const landed = await stageLanded(page);
+    await settle(page);
+    check("camera: the shot's staging was in flight while the person moved and typed", held && landed, `held ${held} landed ${landed}`);
+    check("camera: the late shot does not join the other experiment's draft", (await draftCount(page)) === 0, `${await draftCount(page)} draft photos`);
+    await page.getByTestId('result-add').click();
+    check('camera: Save result there stores no photo', (await resultCount(page, '1 timestamped entry')) && (await pageCount(page)) === 0);
+    check("camera: the shot's temporary file was written and then removed", await cameraSettled(page, 1), JSON.stringify(await storedFiles(page, '/tmp/camera/')));
+    await page.goBack();
+    await openCard(page, 'experiment-seed-1');
+    check('camera: back in the first experiment, its draft holds the shot', (await draftCount(page)) === 1, `${await draftCount(page)} draft photos`);
+
+    await holdPhotos(page);
+    await pickLibrary(page, 'draft-add-photos');
+    const held2 = await stagingHeld(page);
+    await page.goBack();
+    await page.getByTestId('info-track').click();
+    await page.getByTestId('delete-experiments').click();
+    await page.getByTestId('delete-experiment-seed-1').click();
+    await page.getByTestId('delete-confirm-yes').click();
+    await releasePhotos(page);
+    const deleted = await gone(page, 'delete-row-experiment-seed-1');
+    const noStrays = await noFiles(page, '/data/photos/');
+    check('deleting an experiment whose draft photo is still saving leaves none of its draft photos stored',
+      held2 && deleted && noStrays, `held ${held2} deleted ${deleted} ${JSON.stringify(await storedFiles(page, '/data/photos/'))}`);
+    await page.getByTestId('tab-track').or(page.getByRole('button', { name: 'Track' })).first().click();
+    await openCard(page, 'experiment-seed-2');
+    await settle(page);
+    check("the other experiment keeps its own result and gains no photo", (await resultCount(page, '1 timestamped entry')) && (await pageCount(page)) === 0 && (await draftCount(page)) === 0);
+    await context.close();
+  }
+
+  // --- deterministic permission refusal; host-level camera policy varies across machines ---
+  {
+    const { context, page } = await open(browser, { init: `(${permissionDenied.toString()})()` });
     await page.getByTestId('new-add-photos').click();
     await page.getByTestId('photo-source-camera').click();
     const denied = await sees(page, 'camera-error', 15000);
     const msg = denied ? await text(page, 'camera-error') : '';
-    check('a denied camera is explained, with nothing added', denied && /denied/i.test(msg) && (await photos(page)) === 0, msg);
+    check('a denied camera is explained, with nothing added (mocked)', denied && /denied/i.test(msg) && (await photos(page)) === 0, msg);
     await page.getByTestId('camera-close').click();
     await gone(page, 'camera-error');
     await context.close();
@@ -297,7 +436,6 @@ try {
   if (page) console.log('DOM', await page.evaluate(() => [...document.querySelectorAll('[data-testid]')].filter((e) => /note|error|viewfinder|shutter|camera|source/.test(e.dataset.testid)).map((e) => `${e.dataset.testid}${e.disabled ? '(disabled)' : ''}:${e.innerText.slice(0, 60)}`).join(' | ')).catch(() => '(page gone)'));
 } finally {
   await browser.close();
-  await denyBrowser.close();
   server.stop();
 }
 console.log(`shutter retries: ${retries}`);

@@ -888,3 +888,103 @@ test "Add photos asks Take Photo, Choose from Library or Cancel, and Cancel chan
   expect tree has "photo-source-library"
   tap "photo-source-cancel"
   expect tree missing "photos-exp"
+
+test "a result draft's notes and staged photo stay with their own experiment, and each Save result stores only its own"
+  at "/experiment/experiment-seed-1"
+  clock data
+  type "result-draft" "Sprouts draft"
+  tap "draft-add-photos"
+  tap "photo-source-library"
+  pick "photo-picker" "fixtures/sample.png"
+  clock data
+  clock settle
+  expect tree has "photos-draft"
+  back
+  clock settle
+  tap "card-experiment-seed-2"
+  clock data
+  clock settle
+  expect tree missing "photos-draft"
+  expect text "result-draft" == ""
+  type "result-draft" "Cooling notes"
+  clock settle
+  expect tree missing "photos-draft"
+  tap "result-add"
+  clock data
+  clock settle
+  expect text "result-count" == "1 timestamped entry"
+  expect tree missing "photo-photo-1767225600000-1-0"
+  back
+  clock settle
+  tap "card-experiment-seed-1"
+  clock data
+  clock settle
+  expect text "result-draft" == "Sprouts draft"
+  expect tree has "photos-draft"
+  expect tree has "photo-photo-1767225600000-1-0"
+  tap "result-add"
+  clock data
+  clock settle
+  expect text "result-count" == "2 timestamped entries"
+  expect tree missing "photos-draft"
+  expect text "result-draft" == ""
+  reload
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-2"
+  clock settle
+  expect text "result-count" == "1 timestamped entry"
+  expect tree missing "photo-photo-1767225600000-1-0"
+
+test "adding photos to one experiment's draft does not move another experiment's typed notes into it"
+  at "/experiment/experiment-seed-2"
+  clock data
+  type "result-draft" "Only for cooling"
+  back
+  clock settle
+  tap "card-experiment-seed-1"
+  clock data
+  clock settle
+  tap "draft-add-photos"
+  tap "photo-source-cancel"
+  clock settle
+  expect text "result-draft" == ""
+  back
+  clock settle
+  tap "card-experiment-seed-2"
+  clock settle
+  expect text "result-draft" == "Only for cooling"
+
+test "deleting an experiment with a staged draft photo leaves the other experiment's draft alone"
+  at "/experiment/experiment-seed-1"
+  clock data
+  tap "draft-add-photos"
+  tap "photo-source-library"
+  pick "photo-picker" "fixtures/sample.png"
+  clock data
+  clock settle
+  expect tree has "photos-draft"
+  back
+  clock settle
+  tap "card-experiment-seed-2"
+  clock data
+  type "result-draft" "Kept"
+  back
+  clock settle
+  tap "info-track"
+  clock settle
+  tap "delete-experiments"
+  clock settle
+  tap "delete-experiment-seed-1"
+  clock settle
+  tap "delete-confirm-yes"
+  clock data
+  clock settle
+  expect state experiments.length == 1
+  expect state draftPhotoSets == []
+  tap "tab-track"
+  clock settle
+  tap "card-experiment-seed-2"
+  clock settle
+  expect text "result-draft" == "Kept"
+  expect tree missing "photos-draft"

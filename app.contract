@@ -40,6 +40,23 @@ shape ResultDraft
   failed: bool
   error: string
 
+// A staged photo waiting in one experiment's new-result draft; it is that experiment's, wherever the person goes meanwhile.
+shape DraftPhoto
+  owner: string
+  photo: Photo
+
+// The unsaved new-result notes of one experiment.
+shape NoteDraft
+  expId: string
+  notes: string
+
+// One staging sent and not yet answered: whose photos they are ("new", or an experiment id), fixed when it is sent.
+// `resets` is the count of Resets then, so a staging that outlives a Reset is thrown away.
+shape StageJob
+  id: string
+  owner: string
+  resets: number
+
 shape Experiment
   id: string
   title: string
@@ -91,7 +108,7 @@ component ExperimemoExact
   mutation created as shape Reply refreshes experiments then afterCreate
   mutation saved as shape Reply refreshes experiments
   mutation statusSaved as shape Reply refreshes experiments
-  mutation removed as shape Reply refreshes experiments
+  mutation removed as shape Reply refreshes experiments then afterRemove
   mutation staged as shape PhotoReply then afterStage
   mutation attached as shape PhotoReply refreshes experiments then afterAttach
   mutation detached as shape PhotoReply refreshes experiments then afterDetach
@@ -100,6 +117,7 @@ component ExperimemoExact
   mutation camShot as shape CameraPhoto then afterShot
   mutation camStopped as shape MediaStreamTrack
   mutation camDropped as shape PhotoReply
+  mutation dropped as shape PhotoReply
   mutation resultAdded as shape Reply refreshes experiments then afterResultAdd
   mutation resultEdited as shape Reply refreshes experiments then afterResultEdit
   mutation resultRemoved as shape Reply refreshes experiments
@@ -124,13 +142,27 @@ component ExperimemoExact
   state resultKey = 0
   state sentResultId = ""
   state sentResultNotes = ""
-  state draftFor = ""
   state pickScope = ""
   state pickExp = ""
   state pickResult = ""
   state photoMade = 0
   state newPhotos: Photo[] = []
-  state draftPhotos: Photo[] = []
+  // Each experiment's new-result draft (its notes, its staged photos), kept apart so one never shows or saves another's.
+  state draftPhotoSets: DraftPhoto[] = []
+  state noteDrafts: NoteDraft[] = []
+  // The result being saved: its experiment, notes and photo ids, as sent, so its reply clears only those.
+  state addingFor = ""
+  state addingNotes = ""
+  state addingPhotoIds: string[] = []
+  // The library pick's destination, fixed when the picker opens.
+  state libScope = ""
+  state libExp = ""
+  state libResult = ""
+  // Stagings in flight, each with its owner; experiments deleted this run; Resets this run; the record being deleted.
+  state stageJobs: StageJob[] = []
+  state goneExps: string[] = []
+  state resets = 0
+  state removingId = ""
   state photoNote = ""
   state photoNoteKey = ""
   state camOpen = false
@@ -142,8 +174,6 @@ component ExperimemoExact
   state shotScope = ""
   state shotExp = ""
   state shotResult = ""
-  // Where the photos being staged go, fixed when they are sent: New's or the result draft's.
-  state stageScope = ""
   derive camOpenError = match failure(camOpened) { case some(f) => (f.code == "NotAllowedError" or f.code == "denied" ? "Camera access was denied. Allow the camera in your browser or system settings, then choose Take Photo again." : (f.code == "NotFoundError" ? "No camera was found on this device." : `The camera could not be opened: ${f.message}`)), case none => "" }
   derive camShotError = match failure(camShot) { case some(f) => `The photo could not be taken: ${f.message}`, case none => "" }
   derive shotErrorShown = shotSession == camSession ? camShotError : ""
@@ -154,10 +184,10 @@ component ExperimemoExact
   derive shotHeight = match camShot { case some(p) => p.height, case none => 0 }
   derive stagedPhotos = match staged { case some(r) => r.photos, case none => [] }
   derive stagedError = match staged { case some(r) => r.error, case none => "" }
+  derive stagedId = match staged { case some(r) => r.id, case none => "" }
   derive attachedError = match attached { case some(r) => r.error, case none => "" }
   derive detachedError = match detached { case some(r) => r.error, case none => "" }
   derive photoBusy = pending(staged) or pending(attached) or pending(detached)
-  state draftNotes = ""
   state resultMade = 0
   state aimedTitle = ""
   state made = 0
@@ -205,8 +235,19 @@ component ExperimemoExact
     showModal("delete-confirm")
   action confirmDelete
     if not pending(removed)
+      removingId = aimedId
       resultDrafts = resultDrafts.filter(d => d.expId != aimedId)
       send removed = deleteExperimentRecord(aimedId)
+  // Once the record is gone, its new-result draft goes too: the staged photos' files are removed, and a
+  // staging for it still in flight is thrown away when it lands (goneExps). A refused delete keeps the draft.
+  action afterRemove
+    if removedError == "" and not failed(removed)
+      goneExps = goneExps.concat([removingId])
+      let leftover = draftPhotoSets.filter(d => d.owner == removingId).map(d => d.photo.uri)
+      draftPhotoSets = draftPhotoSets.filter(d => d.owner != removingId)
+      noteDrafts = noteDrafts.filter(d => d.expId != removingId)
+      if leftover.length > 0
+        send dropped = discardPhotoFiles(leftover)
   action askReset
     showModal("reset-confirm")
   action confirmReset
@@ -215,6 +256,13 @@ component ExperimemoExact
   // Leave App info for an empty Track only when the reply says the file was cleared.
   action afterReset
     if resetError == "" and not failed(resetDone)
+      // Every result draft belonged to a record now gone: its staged files go, and a staging in flight is thrown away.
+      resets = resets + 1
+      let leftover = draftPhotoSets.map(d => d.photo.uri)
+      draftPhotoSets = []
+      noteDrafts = []
+      if leftover.length > 0
+        send dropped = discardPhotoFiles(leftover)
       let fromDelete = top(nav).name == "delete" ? back(nav) : nav
       let fromInfo = top(fromDelete).name == "info" ? back(fromDelete) : fromDelete
       nav = select(fromInfo, "track")
@@ -248,19 +296,26 @@ component ExperimemoExact
     autoKey = autoKey + 1
     refresh experiments
   // Result entries are stored at once, one at a time; the timestamp is taken here, never typed.
+  // Each experiment keeps its own new-result notes; typing in one never touches another's.
   action editDraft(id: string, v: string)
-    draftFor = id
-    draftNotes = v
+    noteDrafts = noteDrafts.filter(d => d.expId != id).concat([NoteDraft(expId=id, notes=v)])
+  // Save result sends that experiment's own notes and staged photos, and nothing of any other draft.
   action addResult(id: string)
-    if draftFor == id and (draftNotes.trim() != "" or draftPhotos.length > 0) and not pending(resultAdded) and not pending(time)
+    let notes = match first(noteDrafts.filter(d => d.expId == id)) { case some(d) => d.notes, case none => "" }
+    let photos = draftPhotoSets.filter(d => d.owner == id).map(d => d.photo)
+    if (notes.trim() != "" or photos.length > 0) and not pending(resultAdded) and not pending(time)
       let at = time.epochAtZero + performanceNow()
-      send resultAdded = addResultRecord(id, `result-${at}-${resultMade}`, at, draftNotes, draftPhotos)
+      addingFor = id
+      addingNotes = notes
+      addingPhotoIds = photos.map(p => p.id)
+      send resultAdded = addResultRecord(id, `result-${at}-${resultMade}`, at, notes, photos)
       resultMade = resultMade + 1
-  // The draft is cleared only when the reply says the entry is stored.
+  // The draft is cleared only when the reply says the entry is stored, and only of what was sent:
+  // notes edited and photos staged while it saved stay in the draft.
   action afterResultAdd
     if addError == "" and not failed(resultAdded)
-      draftNotes = ""
-      draftPhotos = []
+      noteDrafts = noteDrafts.filter(d => not (d.expId == addingFor and d.notes == addingNotes))
+      draftPhotoSets = draftPhotoSets.filter(d => not (d.owner == addingFor and addingPhotoIds.includes(d.photo.id)))
   // An edit replaces that result's draft only; the timer restarts, and a failed draft waits for Retry.
   action editResultDraft(expId: string, id: string, notes: string)
     resultDrafts = resultDrafts.filter(d => d.id != id).concat([ResultDraft(expId=expId, id=id, notes=notes, failed=false, error="")])
@@ -303,10 +358,11 @@ component ExperimemoExact
     pickResult = resultId
     photoNote = ""
     photoNoteKey = scope == "new" ? "new" : (scope == "draft" ? `draft-${expId}` : (scope == "result" ? `result-${resultId}` : `exp-${expId}`))
-    if scope == "draft"
-      draftFor = expId
     showModal("photo-source")
   action chooseLibrary
+    libScope = pickScope
+    libExp = pickExp
+    libResult = pickResult
     showPicker("photo-picker")
   action sourceCancelled
     photoNote = "Photo selection cancelled. Nothing was changed."
@@ -361,6 +417,9 @@ component ExperimemoExact
     if camShotError == "" and not failed(camShot)
       if shotSession != camSession or not camOpen
         send camDropped = discardCameraShot(shotPath)
+      else if photoBusy
+        send camDropped = discardCameraShot(shotPath)
+        photoNote = "Another photo change is still saving. Try again in a moment."
       else
         let at = time.epochAtZero + performanceNow()
         let n = photoMade
@@ -370,7 +429,7 @@ component ExperimemoExact
         camTrack = ""
         close("camera-dialog")
         if shotScope == "new" or shotScope == "draft"
-          stageScope = shotScope
+          stageJobs = stageJobs.concat([StageJob(id=`photo-${at}-${n}`, owner=(shotScope == "new" ? "new" : shotExp), resets=resets)])
           send staged = stageCameraPhoto(`photo-${at}-${n}`, at, shotPath, shotType, shotSize, shotWidth, shotHeight)
         else
           send attached = attachCameraPhoto(shotExp, shotResult, `photo-${at}-${n}`, at, shotPath, shotType, shotSize, shotWidth, shotHeight)
@@ -383,21 +442,36 @@ component ExperimemoExact
       let at = time.epochAtZero + performanceNow()
       let n = photoMade + 1
       photoMade = n
-      if pickScope == "new" or pickScope == "draft"
-        stageScope = pickScope
+      if libScope == "new" or libScope == "draft"
+        stageJobs = stageJobs.concat([StageJob(id=`photo-${at}-${n}`, owner=(libScope == "new" ? "new" : libExp), resets=resets)])
         send staged = stagePhotoFiles(`photo-${at}-${n}`, at, files)
       else
-        send attached = attachPhotoRecord(pickExp, pickResult, `photo-${at}-${n}`, at, files)
+        send attached = attachPhotoRecord(libExp, libResult, `photo-${at}-${n}`, at, files)
     else
       photoNote = "Another photo change is still saving. Try again in a moment."
+  // A staging lands with the owner it was sent for (its reply's id names it), whichever screen is open now:
+  // New's photos, or that one experiment's draft. One whose experiment was deleted, or sent before a
+  // Reset, is unwanted: its copies are removed. A reply no staging accounts for is removed too.
   action afterStage
-    if stagedError == "" and not failed(staged)
-      if stageScope == "new"
-        newPhotos = newPhotos.concat(stagedPhotos)
-      else
-        draftPhotos = draftPhotos.concat(stagedPhotos)
-    else
-      photoNote = (stagedError == "" ? "Could not add the photos." : stagedError)
+    let job = first(stageJobs.filter(j => j.id == stagedId))
+    stageJobs = stagedId == "" ? [] : stageJobs.filter(j => j.id != stagedId)
+    match job
+      case some(j)
+        if stagedError == "" and not failed(staged)
+          if j.owner == "new"
+            newPhotos = newPhotos.concat(stagedPhotos)
+          else if j.resets != resets or goneExps.includes(j.owner)
+            send dropped = discardPhotoFiles(stagedPhotos.map(p => p.uri))
+          else
+            draftPhotoSets = draftPhotoSets.concat(stagedPhotos.map(p => DraftPhoto(owner=j.owner, photo=p)))
+        else
+          photoNoteKey = j.owner == "new" ? "new" : `draft-${j.owner}`
+          photoNote = (stagedError == "" ? "Could not add the photos." : stagedError)
+      case none
+        if stagedPhotos.length > 0
+          send dropped = discardPhotoFiles(stagedPhotos.map(p => p.uri))
+        else if stagedError != "" or failed(staged)
+          photoNote = (stagedError == "" ? "Could not add the photos." : stagedError)
   action afterAttach
     if attachedError != "" or failed(attached)
       photoNote = (attachedError == "" ? "Could not add the photos." : attachedError)
@@ -411,7 +485,7 @@ component ExperimemoExact
       newPhotos = newPhotos.filter(p => p.id != photoId)
       send discarded = discardPhotoFile(uri)
     else if scope == "draft"
-      draftPhotos = draftPhotos.filter(p => p.id != photoId)
+      draftPhotoSets = draftPhotoSets.filter(d => not (d.owner == expId and d.photo.id == photoId))
       send discarded = discardPhotoFile(uri)
     else if not photoBusy and not pending(time)
       let at = time.epochAtZero + performanceNow()
@@ -620,7 +694,7 @@ component ExperimemoExact
                         text "Back to Track"
                   else
                     for x in experiments.filter(r => r.id == e.params.id) key=x.id
-                      ExperimentEditor(route=e.id, x=x, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, draft=(draftFor == x.id ? draftNotes : ""), editDraft=editDraft, addResult=addResult, adding=pending(resultAdded), addError=addError, editResult=editResultDraft, retryResult=retryResult, resultDrafts=resultDrafts, askDeleteResult=askDeleteResult, removeResultError=removeResultError, resultBusy=pending(resultEdited) or pending(resultRemoved), draftPhotos=(draftFor == x.id ? draftPhotos : []), askPhotos=askPhotos, removePhoto=removePhotoFrom, photoNote=photoNote, photoNoteKey=photoNoteKey, photoBusy=photoBusy, hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
+                      ExperimentEditor(route=e.id, x=x, touch=touch, retry=retrySave, setStatus=changeStatus, saveError=savedError, savedId=savedId, draft=(match first(noteDrafts.filter(d => d.expId == x.id)) { case some(d) => d.notes, case none => "" }), editDraft=editDraft, addResult=addResult, adding=pending(resultAdded), addError=addError, editResult=editResultDraft, retryResult=retryResult, resultDrafts=resultDrafts, askDeleteResult=askDeleteResult, removeResultError=removeResultError, resultBusy=pending(resultEdited) or pending(resultRemoved), draftPhotos=draftPhotoSets.filter(d => d.owner == x.id).map(d => d.photo), askPhotos=askPhotos, removePhoto=removePhotoFrom, photoNote=photoNote, photoNoteKey=photoNoteKey, photoBusy=photoBusy, hasPending=hasPending, saving=pending(saved), statusBusy=pending(statusSaved), statusError=statusError)
                 else if e.name == "track"
                   scroll id=`content-${e.id}` flex=1 min-height=0
                     column padding=20 gap=20 width="100%" box-sizing="border-box"
