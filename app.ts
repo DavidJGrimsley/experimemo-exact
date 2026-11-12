@@ -31,7 +31,7 @@ export const grants = [
   `fs.write ${FILE}`,
   'fs.read app:/tmp',
   'fs.write app:/tmp',
-  'device.camera purpose.camera Experimemo uses the camera to photograph your experiments.',
+  'device.camera purpose.camera',
   'fs.read app:/data/photos',
   'fs.write app:/data/photos',
 ].join('\n');

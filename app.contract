@@ -671,22 +671,20 @@ component ExperimemoExact
                       link href="/" testId="open-experiments" background-color="brand" color="ink.on-brand" border-radius=12 min-height="3rem" padding="0.75rem 1rem" font-weight=800 align-self="flex-start" max-width="100%" box-sizing="border-box"
                         text "Open experiments" -exact-fit="shrink"
                 else if e.name == "experiment"
+                  header
+                    button id="back" press=done aria-label="Back to Track" testId="editor-back"
+                      text "Track"
+                    text "Experiment" role="heading" aria-level=1 -exact-fit="shrink"
                   if pending(experiments)
-                    header
-                      text "Experiment" role="heading" aria-level=1 -exact-fit="shrink"
                     column padding=20 testId="editor-loading"
                       text "Loading experiment…" font-size="0.9375rem"
                   else if failed(experiments)
-                    header
-                      text "Experiment" role="heading" aria-level=1 -exact-fit="shrink"
                     column padding=20 gap=12 testId="editor-failed"
                       text "This experiment could not be read from storage." font-size="0.9375rem" font-weight=800
                       text loadError font-size="0.8125rem" line-height="1.25rem" testId="editor-failed-detail"
                       button press=reload testId="editor-retry" border="1px solid var(--brand)" border-radius=999 min-height="3rem" padding="0.5rem 1rem" align-self="flex-start"
                         text "Try again" font-weight=800 font-size="0.875rem"
                   else if experiments.filter(x => x.id == e.params.id).length == 0
-                    header
-                      text "Not found" role="heading" aria-level=1
                     column padding=20 gap=12 testId="editor-missing"
                       text "This experiment does not exist" font-size="1.75rem" font-weight=800 line-height=1.4 -exact-fit="shrink"
                       text "It may have been deleted. Head back to Track to see your experiments." font-size="0.9375rem" line-height="1.375rem"
@@ -819,7 +817,7 @@ component ExperimemoExact
             button press=closeCamera testId="camera-close" aria-label="Close camera" border="1px solid var(--brand)" border-radius=999 min-height=48 font-weight=800 font-size="0.875rem" padding="0.5rem 1rem"
               text "Close"
       input type="file" accept="image/*" multiple=true id="photo-picker" testId="photo-picker" display="none" change=photosPicked cancel=photosCancelled
-      row role="tablist" appearance="none" display=(wide ? "none" : "flex")
+      row role="tablist" display=(wide ? "none" : "flex")
         button role="tab" aria-controls="panel-new" aria-selected=(nav.tab == "new") press=pick("new") testId="tab-new" flex=1
           image "symbol:add"
           text "New"
@@ -977,8 +975,6 @@ component ExperimentEditor
     touch(x.id, title, category, hypothesis, procedure, dataPlan, observations, notes, conclusion, n)
   view
     column flex=1 min-height=0 display="flex" flex-direction="column"
-      header
-        text "Experiment" role="heading" aria-level=1 -exact-fit="shrink"
       scroll id=`content-${route}` flex=1 min-height=0
         column padding=20 gap=16 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
           text x.title role="heading" aria-level=2 testId="editor-title" font-size="1.75rem" font-weight=800 line-height=1.4 -exact-fit="shrink"
@@ -990,37 +986,6 @@ component ExperimentEditor
             text x.meta font-size="0.75rem" line-height="1.125rem" testId="editor-meta"
             if statusError != ""
               text statusError color="warning" font-size="0.8125rem" font-weight=700 testId="status-error" role="alert"
-          column background-color="surface.card" border=(titleError == "" ? "1px solid var(--brand)" : "1px solid var(--warning)") border-radius=12 padding=16 gap=8
-            text "Experiment title" font-size="0.9375rem" font-weight=800
-            input value=title input=editTitle aria-label="Experiment title" aria-invalid=(titleError != "") testId="edit-title" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
-            if titleError != ""
-              text titleError color="warning" font-size="0.8125rem" font-weight=700 testId="edit-error-title"
-          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
-            text "Category" font-size="0.9375rem" font-weight=800
-            input value=category input=editCategory aria-label="Category" testId="edit-category" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
-          column background-color="surface.card" border=(hypothesisError == "" ? "1px solid var(--brand)" : "1px solid var(--warning)") border-radius=12 padding=16 gap=8
-            text "Hypothesis" font-size="0.9375rem" font-weight=800
-            textarea value=hypothesis input=editHypothesis aria-label="Hypothesis" aria-invalid=(hypothesisError != "") testId="edit-hypothesis" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
-            if hypothesisError != ""
-              text hypothesisError color="warning" font-size="0.8125rem" font-weight=700 testId="edit-error-hypothesis"
-          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
-            text "Procedure" font-size="0.9375rem" font-weight=800
-            textarea value=procedure input=editProcedure aria-label="Procedure" testId="edit-procedure" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
-          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
-            text "Data collection plan" font-size="0.9375rem" font-weight=800
-            textarea value=dataPlan input=editDataPlan aria-label="Data collection plan" testId="edit-dataplan" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
-          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
-            text "Observations" font-size="0.9375rem" font-weight=800 -exact-fit="shrink"
-            textarea value=observations input=editObservations aria-label="Observations" testId="edit-observations" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
-          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
-            text "Field notes" font-size="0.9375rem" font-weight=800
-            textarea value=notes input=editNotes aria-label="Field notes" testId="edit-notes" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
-          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
-            text "Conclusion" font-size="0.9375rem" font-weight=800
-            textarea value=conclusion input=editConclusion aria-label="Conclusion" testId="edit-conclusion" rows=4 background-color="surface.page" border-radius=14 padding="12px 14px" height=112
-          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=8
-            text "Planned photo count" font-size="0.9375rem" font-weight=800
-            input value=planned input=editPlanned inputmode="numeric" aria-label="Planned photo count" testId="edit-planned" background-color="surface.page" border-radius=14 padding="12px 14px" height=50
           column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="results-card"
             text "Results" role="heading" aria-level=3 font-size="1.0625rem" font-weight=800
             text x.entryCount font-size="0.8125rem" font-weight=700 testId="result-count"
@@ -1048,8 +1013,39 @@ component ExperimentEditor
             PhotoGrid(photos=x.photoList, prefix="exp", remove=dropExpPhoto, busy=photoBusy)
             if photoNoteKey == `exp-${x.id}` and photoNote != ""
               text photoNote color="warning" font-size="0.8125rem" line-height="1.25rem" font-weight=700 testId="exp-photo-note" role="alert"
-          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=10 testId="autosave-card"
-            text "Autosave" font-size="1.0625rem" font-weight=800
+          column background-color="surface.card" border="1px solid var(--brand)" border-radius=12 padding=16 gap=14 testId="experiment-details"
+            column gap=6
+              text "Experiment title" font-size="0.9375rem" font-weight=800
+              input value=title input=editTitle aria-label="Experiment title" aria-invalid=(titleError != "") testId="edit-title" background-color="surface.page" border-radius=14 padding="12px 14px" height=44
+              if titleError != ""
+                text titleError color="warning" font-size="0.8125rem" font-weight=700 testId="edit-error-title"
+            column gap=6
+              text "Category" font-size="0.9375rem" font-weight=800
+              input value=category input=editCategory aria-label="Category" testId="edit-category" background-color="surface.page" border-radius=14 padding="12px 14px" height=44
+            column gap=6
+              text "Hypothesis" font-size="0.9375rem" font-weight=800
+              textarea value=hypothesis input=editHypothesis aria-label="Hypothesis" aria-invalid=(hypothesisError != "") testId="edit-hypothesis" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
+              if hypothesisError != ""
+                text hypothesisError color="warning" font-size="0.8125rem" font-weight=700 testId="edit-error-hypothesis"
+            column gap=6
+              text "Procedure" font-size="0.9375rem" font-weight=800
+              textarea value=procedure input=editProcedure aria-label="Procedure" testId="edit-procedure" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
+            column gap=6
+              text "Data collection plan" font-size="0.9375rem" font-weight=800
+              textarea value=dataPlan input=editDataPlan aria-label="Data collection plan" testId="edit-dataplan" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
+            column gap=6
+              text "Observations" font-size="0.9375rem" font-weight=800 -exact-fit="shrink"
+              textarea value=observations input=editObservations aria-label="Observations" testId="edit-observations" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
+            column gap=6
+              text "Field notes" font-size="0.9375rem" font-weight=800
+              textarea value=notes input=editNotes aria-label="Field notes" testId="edit-notes" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
+            column gap=6
+              text "Conclusion" font-size="0.9375rem" font-weight=800
+              textarea value=conclusion input=editConclusion aria-label="Conclusion" testId="edit-conclusion" rows=3 background-color="surface.page" border-radius=14 padding="12px 14px" height=88
+            column gap=6
+              text "Planned photo count" font-size="0.9375rem" font-weight=800
+              input value=planned input=editPlanned inputmode="numeric" aria-label="Planned photo count" testId="edit-planned" background-color="surface.page" border-radius=14 padding="12px 14px" height=44
+          column gap=8 testId="autosave-status"
             text "Changes save automatically a moment after you stop typing. Result notes save the same way, and a new result is saved when you add it; photos are added and removed on their own, straight away." font-size="0.875rem" line-height="1.25rem"
             if hasPending or saving
               text "Saving…" font-size="0.8125rem" font-weight=700 testId="save-pending" role="status"

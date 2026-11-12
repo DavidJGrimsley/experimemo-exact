@@ -10,7 +10,8 @@
     "name": "Experimemo"
   },
   "host": {
-    "web": {}
+    "web": {},
+    "android": {}
   },
   "deploy": {
     "store": {

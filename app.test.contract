@@ -27,6 +27,16 @@ test "a card opens its own record"
   expect text "edit-category" == "Physics"
   expect text "edit-planned" == "0"
 
+test "editor Back returns to Track"
+  tap "tab-track"
+  clock data
+  tap "card-experiment-seed-2"
+  clock settle
+  expect tree has "experiment-details"
+  tap "editor-back"
+  clock settle
+  expect tree has "card-experiment-seed-2"
+
 test "a deep link opens the record, and a missing id says so"
   at "/experiment/experiment-seed-1"
   clock data
