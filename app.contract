@@ -696,7 +696,7 @@ component ExperimemoExact
                   header
                     button id="back" press=done aria-label="Back to Track" testId="editor-back"
                       text "Track"
-                    text "Experiment" role="heading" aria-level=1 -exact-fit="shrink"
+                    text (match first(experiments.filter(x => x.id == e.params.id)) { case some(x) => x.title, case none => (pending(experiments) ? "Loading…" : "Not found") }) role="heading" aria-level=1 testId="editor-title" white-space="nowrap" text-overflow="ellipsis" overflow="hidden"
                   if pending(experiments)
                     column padding=20 testId="editor-loading"
                       text "Loading experiment…" font-size="0.9375rem"
@@ -1001,7 +1001,6 @@ component ExperimentEditor
     column flex=1 min-height=0 display="flex" flex-direction="column"
       scroll id=`content-${route}` flex=1 min-height=0
         column padding=20 gap=16 max-width="45rem" margin="0 auto" width="100%" box-sizing="border-box"
-          text x.title role="heading" aria-level=2 testId="editor-title" font-size="1.75rem" font-weight=800 line-height=1.4 -exact-fit="shrink"
           column background-color="surface.card" border=(x.complete ? "1px solid var(--secondary)" : "1px solid var(--brand)") border-radius=12 padding=16 gap=10
             row gap=10 flex-wrap="wrap" align-items="center" justify-content="space-between"
               text x.badge testId="editor-status" role="status" background-color=(x.complete ? "secondary" : "brand") color=(x.complete ? "ink.on-secondary" : "ink.on-brand") border-radius=999 padding="4px 10px" font-size="0.75rem" font-weight=800
